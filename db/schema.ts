@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const minnaSessions = sqliteTable("minna_sessions", {
   id: text("id").primaryKey(),
@@ -29,4 +29,18 @@ export const minnaParticipants = sqliteTable(
     finaleEligible: integer("finale_eligible", { mode: "boolean" }).notNull().default(false),
   },
   (table) => [index("minna_generation_seen_idx").on(table.generation, table.lastSeen)],
+);
+
+export const minnaFireworks = sqliteTable(
+  "minna_fireworks",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    generation: integer("generation").notNull(),
+    clientId: text("client_id").notNull(),
+    x: real("x").notNull(),
+    y: real("y").notNull(),
+    color: text("color").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [index("minna_fireworks_generation_created_idx").on(table.generation, table.createdAt)],
 );

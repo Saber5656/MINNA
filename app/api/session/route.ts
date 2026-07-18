@@ -48,6 +48,13 @@ interface ParticipantRow {
   finale_eligible: number;
 }
 
+interface FireworkRow {
+  id: number;
+  x: number;
+  y: number;
+  color: string;
+}
+
 export async function GET(request: Request) {
   try {
     void request;
@@ -66,7 +73,7 @@ export async function POST(request: Request) {
     const payload = (await request.json()) as Record<string, unknown>;
     const action = payload.action;
 
-    if (["join", "heartbeat", "answer", "hold-start", "hold-stop"].includes(String(action))) {
+    if (["join", "heartbeat", "answer", "hold-start", "hold-stop", "firework"].includes(String(action))) {
       if (!(await isValidRoomCode(payload.roomCode))) return error("invalid-room", 403);
     }
 
@@ -101,6 +108,12 @@ export async function POST(request: Request) {
       return stateResponse(await currentState());
     }
 
+    if (action === "firework") {
+      if (!isClientId(payload.clientId)) return error("invalid-client", 400);
+      await launchFirework(payload.clientId);
+      return stateResponse(await currentState());
+    }
+
     if (["open-room", "tick", "next", "fire", "reset"].includes(String(action))) {
       const user = await getChatGPTUser();
       if (!isLocalRequest(request)) {
@@ -113,7 +126,7 @@ export async function POST(request: Request) {
       const roomCode = await ensureRoomCode();
       if (action === "tick") await advanceFinale();
       if (["next", "fire", "reset"].includes(String(action))) await hostAction(String(action));
-      return stateResponse({ ...(await currentState()), joinCode: roomCode });
+      return stateResponse({ ...(await currentState(true)), joinCode: roomCode });
     }
 
     return error("unknown-action", 400);
@@ -232,6 +245,31 @@ async function updateHold(clientId: string, starting: boolean) {
     .run();
 }
 
+async function launchFirework(clientId: string) {
+  const session = await readSession();
+  const now = Date.now();
+  const participant = await env.DB.prepare(
+    `SELECT color FROM minna_participants
+     WHERE secret_id = ? AND generation = ? AND last_seen >= ?`,
+  )
+    .bind(clientId, session.generation, now - ACTIVE_MS)
+    .first<{ color: string }>();
+  if (!participant) throw new ParticipantRequiredError();
+
+  const x = randomBetween(0.12, 0.88);
+  const y = randomBetween(0.12, 0.7);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM minna_fireworks WHERE created_at < ?").bind(now - 15_000),
+    env.DB.prepare(
+      `INSERT INTO minna_fireworks (generation, client_id, x, y, color, created_at)
+       SELECT ?, ?, ?, ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM minna_fireworks WHERE client_id = ? AND created_at >= ?
+       )`,
+    ).bind(session.generation, clientId, x, y, participant.color, now, clientId, now - 650),
+  ]);
+}
+
 async function hostAction(action: string) {
   const session = await readSession();
   const now = Date.now();
@@ -242,6 +280,7 @@ async function hostAction(action: string) {
          collective_line = NULL, deadline_at = NULL, special = 0, updated_at = ? WHERE id = ?`,
       ).bind(now, SESSION_ID),
       env.DB.prepare("DELETE FROM minna_participants"),
+      env.DB.prepare("DELETE FROM minna_fireworks"),
     ]);
     return;
   }
@@ -292,7 +331,7 @@ async function hostAction(action: string) {
     .run();
 }
 
-async function currentState(): Promise<PublicState> {
+async function currentState(includeFireworks = false): Promise<PublicState> {
   const session = await readSession();
   const active = await participantRows(session.generation, true);
   const finale = await finaleProgress(session.generation);
@@ -328,6 +367,7 @@ async function currentState(): Promise<PublicState> {
       color: participant.color,
       answeredCurrentQuestion: Boolean(answerForPhase(participant, session.phase)),
     })),
+    fireworks: includeFireworks ? await fireworkRows(session.generation) : [],
     answerCounts,
     collectiveLine: session.collective_line,
     finale: {
@@ -338,6 +378,16 @@ async function currentState(): Promise<PublicState> {
       deadlineAt: session.deadline_at,
     },
   };
+}
+
+async function fireworkRows(generation: number) {
+  const result = await env.DB.prepare(
+    `SELECT id, x, y, color FROM minna_fireworks
+     WHERE generation = ? AND created_at >= ? ORDER BY id DESC LIMIT 80`,
+  )
+    .bind(generation, Date.now() - 6_000)
+    .all<FireworkRow>();
+  return result.results.reverse();
 }
 
 async function participantRows(generation: number, activeOnly: boolean) {
@@ -434,6 +484,12 @@ function isTrustedMutation(request: Request) {
   return request.headers.get("sec-fetch-site") !== "cross-site";
 }
 
+function randomBetween(min: number, max: number) {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return min + ((values[0] ?? 0) / 0xffffffff) * (max - min);
+}
+
 function stateResponse(state: PublicState & { joinCode?: string }) {
   return Response.json(state, { headers: { "Cache-Control": "no-store" } });
 }
@@ -444,9 +500,11 @@ function error(message: string, status: number) {
 
 function routeError(cause: unknown) {
   if (cause instanceof RoomFullError) return error("room-full", 429);
+  if (cause instanceof ParticipantRequiredError) return error("participant-required", 403);
   const message = cause instanceof Error ? cause.message : "unexpected-error";
   console.error(cause);
   return error(message.includes("no such table") ? "database-not-ready" : "internal-error", 500);
 }
 
 class RoomFullError extends Error {}
+class ParticipantRequiredError extends Error {}

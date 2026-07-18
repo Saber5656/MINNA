@@ -2,6 +2,7 @@
 
 import {
   ArrowRight,
+  PartyPopper,
   QrCode,
   RotateCcw,
   Sparkles,
@@ -11,7 +12,7 @@ import {
 } from "lucide-react";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { identityForClient, questionForPhase, type PublicState } from "../lib/minna";
+import { identityForClient, questionForPhase, type PublicFirework, type PublicState } from "../lib/minna";
 import { ParticleStage, type Arrival } from "./particle-stage";
 
 const EMPTY_STATE: PublicState = {
@@ -19,6 +20,7 @@ const EMPTY_STATE: PublicState = {
   generation: 1,
   participantCount: 0,
   participants: [],
+  fireworks: [],
   answerCounts: {},
   collectiveLine: null,
   finale: { denominator: 0, completed: 0, progress: 0, special: false, deadlineAt: null },
@@ -35,8 +37,11 @@ function HostExperience() {
   const [qr, setQr] = useState("");
   const [connected, setConnected] = useState(true);
   const [controlLocked, setControlLocked] = useState(false);
+  const [activeFireworks, setActiveFireworks] = useState<PublicFirework[]>([]);
   const previousRef = useRef<PublicState | null>(null);
   const roomCodeRef = useRef("");
+  const seenFireworksRef = useRef(new Set<number>());
+  const fireworkTimersRef = useRef<number[]>([]);
 
   const acceptState = useCallback((next: PublicState) => {
     const previous = previousRef.current;
@@ -59,6 +64,17 @@ function HostExperience() {
   }, []);
 
   const acceptHostState = useCallback((next: PublicState & { joinCode?: string }) => {
+    const incoming = next.fireworks.filter((firework) => !seenFireworksRef.current.has(firework.id));
+    if (incoming.length > 0) {
+      for (const firework of incoming) seenFireworksRef.current.add(firework.id);
+      setActiveFireworks((current) => [...current, ...incoming].slice(-80));
+      for (const firework of incoming) {
+        const timer = window.setTimeout(() => {
+          setActiveFireworks((current) => current.filter((item) => item.id !== firework.id));
+        }, 1_650);
+        fireworkTimersRef.current.push(timer);
+      }
+    }
     acceptState(next);
     if (!next.joinCode || next.joinCode === roomCodeRef.current) return;
     roomCodeRef.current = next.joinCode;
@@ -69,6 +85,10 @@ function HostExperience() {
         setQr(dataUrl);
       });
   }, [acceptState]);
+
+  useEffect(() => () => {
+    for (const timer of fireworkTimersRef.current) window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -132,6 +152,9 @@ function HostExperience() {
           faceCenter={state.phase === "lobby" ? 0.56 : 0.7}
           celebrate={state.phase === "complete" && state.finale.special}
         />
+        <div className="fireworks-layer" aria-hidden="true">
+          {activeFireworks.map((firework) => <FireworkBurst key={firework.id} firework={firework} />)}
+        </div>
         <section className="host-copy" aria-live="polite">
           <p className="phase-marker">{content.marker}</p>
           <h1>{content.title}</h1>
@@ -179,6 +202,7 @@ function AudienceExperience() {
   const [state, setState] = useState(EMPTY_STATE);
   const [connected, setConnected] = useState(false);
   const [sending, setSending] = useState(false);
+  const [fireworkSending, setFireworkSending] = useState(false);
   const [answered, setAnswered] = useState("");
   const [holdRatio, setHoldRatio] = useState(0);
   const clientId = useSyncExternalStore(noopSubscribe, getClientId, serverClientId);
@@ -260,6 +284,18 @@ function AudienceExperience() {
     setHoldRatio(0);
   };
 
+  const launchFirework = async () => {
+    if (!connected || fireworkSending) return;
+    setFireworkSending(true);
+    try {
+      await postAudience("firework", clientId, roomCode);
+    } catch {
+      setConnected(false);
+    } finally {
+      window.setTimeout(() => setFireworkSending(false), 700);
+    }
+  };
+
   const question = questionForPhase(state.phase);
   const self = state.participants.find((participant) => participant.id === identity.publicId);
   const alreadyAnswered = Boolean(question && (answered === question.id || self?.answeredCurrentQuestion));
@@ -316,7 +352,46 @@ function AudienceExperience() {
         )}
         {state.phase === "complete" && <AudienceMessage eyebrow={state.finale.special ? "SPECIAL SYNC" : "MINNA COMPLETE"} title={<>集まってくれて、<br />ありがとう。</>} text="あなたの粒は、顔の中に残っています。" orb />}
       </main>
-      <footer className="audience-footer"><span className={`status-dot ${connected ? "" : "offline"}`} />{connected ? "CONNECTED" : "RECONNECTING"}</footer>
+      <footer className="audience-footer">
+        <div className="audience-connection"><span className={`status-dot ${connected ? "" : "offline"}`} />{connected ? "CONNECTED" : "RECONNECTING"}</div>
+        <button
+          className={`firework-button ${fireworkSending ? "launching" : ""}`}
+          type="button"
+          disabled={!connected || fireworkSending}
+          onClick={() => void launchFirework()}
+          aria-label="司会画面に花火を打ち上げる"
+          title="花火を打ち上げる"
+        >
+          <PartyPopper />
+          <span>花火</span>
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+function FireworkBurst({ firework }: { firework: PublicFirework }) {
+  return (
+    <div
+      className="firework-burst"
+      style={{
+        left: `${firework.x * 100}%`,
+        top: `${firework.y * 100}%`,
+        "--firework-color": firework.color,
+      } as React.CSSProperties}
+    >
+      <span className="firework-flash" />
+      <span className="firework-ring" />
+      {Array.from({ length: 20 }, (_, index) => (
+        <i
+          key={index}
+          style={{
+            "--spark-angle": `${index * 18}deg`,
+            "--spark-distance": `${72 + (index % 4) * 18}px`,
+            "--spark-delay": `${(index % 3) * 24}ms`,
+          } as React.CSSProperties}
+        />
+      ))}
     </div>
   );
 }

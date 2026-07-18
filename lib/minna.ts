@@ -69,11 +69,19 @@ export interface PublicParticipant {
   answeredCurrentQuestion: boolean;
 }
 
+export interface PublicFirework {
+  id: number;
+  x: number;
+  y: number;
+  color: string;
+}
+
 export interface PublicState {
   phase: Phase;
   generation: number;
   participantCount: number;
   participants: PublicParticipant[];
+  fireworks: PublicFirework[];
   answerCounts: Record<string, number>;
   collectiveLine: string | null;
   finale: {

@@ -29,6 +29,13 @@
       "when": 1784358606732,
       "tag": "0003_ancient_jimmy_woo",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784359606039,
+      "tag": "0004_wet_blindfold",
+      "breakpoints": true
     }
   ]
 }
