@@ -363,10 +363,13 @@ async function advanceFinale() {
 
 async function ensureRoomCode() {
   const session = await readSession();
-  if (session.room_code) return session.room_code;
+  if (session.room_code && /^[0-9a-f]{64}$/.test(session.room_code)) {
+    return session.room_code;
+  }
   const candidate = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
   await env.DB.prepare(
-    "UPDATE minna_sessions SET room_code = ? WHERE id = ? AND room_code IS NULL",
+    `UPDATE minna_sessions SET room_code = ?
+     WHERE id = ? AND (room_code IS NULL OR length(room_code) <> 64)`,
   )
     .bind(candidate, SESSION_ID)
     .run();
@@ -374,7 +377,7 @@ async function ensureRoomCode() {
 }
 
 async function isValidRoomCode(value: unknown) {
-  if (typeof value !== "string" || !/^[0-9a-f]{32}$/.test(value)) return false;
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) return false;
   const session = await readSession();
   return session.room_code === value;
 }

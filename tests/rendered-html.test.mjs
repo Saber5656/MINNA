@@ -35,4 +35,6 @@ test("declares the shared database and migration", async () => {
   assert.match(route, /special/);
   assert.match(route, /HOLD_MS = 3_000/);
   assert.match(route, /FINALE_MS = 20_000/);
+  assert.equal(route.match(/crypto\.randomUUID\(\)/g)?.length, 2);
+  assert.ok(route.includes('!/^[0-9a-f]{64}$/.test(value)'));
 });
