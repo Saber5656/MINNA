@@ -1,0 +1,1 @@
+CREATE INDEX `minna_generation_seen_idx` ON `minna_participants` (`generation`,`last_seen`);
