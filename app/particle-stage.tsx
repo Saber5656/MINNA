@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { PublicParticipant } from "../lib/minna";
+import {
+  makeSmileTargets,
+  smileTargetIndex,
+  type PublicParticipant,
+} from "../lib/minna";
 
 export interface Arrival {
   key: string;
@@ -64,7 +68,7 @@ export function ParticleStage({
     const draw = (time: number) => {
       const width = canvas.width;
       const height = canvas.height;
-      const targets = makeFaceTargets(width, height, faceCenter);
+      const targets = makeSmileTargets(width, height, faceCenter);
       context.clearRect(0, 0, width, height);
       context.fillStyle = "rgba(245,241,232,.08)";
       for (const target of targets) {
@@ -74,10 +78,9 @@ export function ParticleStage({
       }
 
       const current = participantsRef.current;
-      const stride = Math.max(1, Math.floor(targets.length / Math.max(1, current.length)));
       const targetFor = (id: string) => {
         const index = current.findIndex((item) => item.id === id);
-        return targets[(Math.max(0, index) * stride) % targets.length] ?? {
+        return targets[smileTargetIndex(Math.max(0, index), current.length)] ?? {
           x: width * faceCenter,
           y: height * 0.48,
         };
@@ -139,31 +142,4 @@ export function ParticleStage({
   }, [faceCenter]);
 
   return <canvas ref={canvasRef} className="particle-stage" aria-label="参加者の粒子で作る集合人格" />;
-}
-
-function makeFaceTargets(width: number, height: number, centerRatio: number) {
-  const points: Array<{ x: number; y: number }> = [];
-  const centerX = width * centerRatio;
-  const centerY = height * 0.48;
-  const radius = Math.min(width, height) * 0.32;
-  addArc(points, centerX, centerY, radius, 0, Math.PI * 2, 132);
-  addArc(points, centerX - radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, 24);
-  addArc(points, centerX + radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, 24);
-  addArc(points, centerX, centerY + radius * 0.08, radius * 0.48, Math.PI * 0.15, Math.PI * 0.85, 64);
-  return points;
-}
-
-function addArc(
-  points: Array<{ x: number; y: number }>,
-  centerX: number,
-  centerY: number,
-  radius: number,
-  start: number,
-  end: number,
-  count: number,
-) {
-  for (let index = 0; index < count; index += 1) {
-    const angle = start + ((end - start) * index) / Math.max(1, count - 1);
-    points.push({ x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius });
-  }
 }

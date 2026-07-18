@@ -6,8 +6,10 @@ import {
   isAnswerOption,
   isClientId,
   isQuestionId,
+  type AnswerOption,
   type Phase,
   type PublicState,
+  type QuestionId,
 } from "../../../lib/minna";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +18,13 @@ const SESSION_ID = "main";
 const ACTIVE_MS = 12_000;
 const HOLD_MS = 3_000;
 const FINALE_MS = 20_000;
+const ANSWER_CONFIG = {
+  "ai-thanks": { phase: "question-1", column: "answer_thanks", options: ["yes", "no"] },
+  "current-state": { phase: "question-2", column: "answer_state", options: ["awake", "sleepy", "deploying"] },
+  "room-wish": { phase: "question-3", column: "answer_wish", options: ["laugh", "wow", "connect"] },
+  "team-role": { phase: "question-4", column: "answer_role", options: ["boke", "tsukkomi", "support"] },
+  "final-energy": { phase: "question-5", column: "answer_energy", options: ["calm", "hot", "maximum"] },
+} as const;
 
 interface SessionRow {
   id: string;
@@ -32,6 +41,9 @@ interface ParticipantRow {
   color: string;
   answer_thanks: string | null;
   answer_state: string | null;
+  answer_wish: string | null;
+  answer_role: string | null;
+  answer_energy: string | null;
   hold_completed: number;
   finale_eligible: number;
 }
@@ -130,6 +142,9 @@ async function joinParticipant(clientId: string) {
        public_id = ?, color = ?,
        answer_thanks = CASE WHEN generation <> ? THEN NULL ELSE answer_thanks END,
        answer_state = CASE WHEN generation <> ? THEN NULL ELSE answer_state END,
+       answer_wish = CASE WHEN generation <> ? THEN NULL ELSE answer_wish END,
+       answer_role = CASE WHEN generation <> ? THEN NULL ELSE answer_role END,
+       answer_energy = CASE WHEN generation <> ? THEN NULL ELSE answer_energy END,
        hold_started_at = CASE WHEN generation <> ? THEN NULL ELSE hold_started_at END,
        hold_completed = CASE WHEN generation <> ? THEN 0 ELSE hold_completed END,
        finale_eligible = CASE WHEN generation <> ? THEN 0 ELSE finale_eligible END,
@@ -139,6 +154,9 @@ async function joinParticipant(clientId: string) {
     .bind(
       identity.publicId,
       identity.color,
+      session.generation,
+      session.generation,
+      session.generation,
       session.generation,
       session.generation,
       session.generation,
@@ -177,15 +195,11 @@ async function heartbeatParticipant(clientId: string) {
   if (result.meta.changes === 0) await joinParticipant(clientId);
 }
 
-async function submitAnswer(clientId: string, questionId: string, optionId: string) {
+async function submitAnswer(clientId: string, questionId: QuestionId, optionId: AnswerOption) {
   const session = await readSession();
-  const expectedPhase = questionId === "ai-thanks" ? "question-1" : "question-2";
-  const validOption =
-    questionId === "ai-thanks"
-      ? optionId === "yes" || optionId === "no"
-      : optionId === "awake" || optionId === "sleepy" || optionId === "deploying";
-  if (session.phase !== expectedPhase || !validOption) return;
-  const column = questionId === "ai-thanks" ? "answer_thanks" : "answer_state";
+  const config = ANSWER_CONFIG[questionId];
+  if (session.phase !== config.phase || !config.options.some((option) => option === optionId)) return;
+  const column = config.column;
   await env.DB.prepare(
     `UPDATE minna_participants SET ${column} = ?, last_seen = ?
      WHERE secret_id = ? AND generation = ? AND ${column} IS NULL`,
@@ -239,7 +253,10 @@ async function hostAction(action: string) {
   const next: Partial<Record<Phase, Phase>> = {
     lobby: "question-1",
     "question-1": "question-2",
-    "question-2": "reveal",
+    "question-2": "question-3",
+    "question-3": "question-4",
+    "question-4": "question-5",
+    "question-5": "reveal",
     reveal: "finale",
   };
   const phase = next[session.phase];
@@ -248,7 +265,13 @@ async function hostAction(action: string) {
   if (phase === "reveal") {
     const rows = await participantRows(session.generation, false);
     collectiveLine = buildCollectiveLine(
-      rows.map((row) => ({ answerThanks: row.answer_thanks, answerState: row.answer_state })),
+      rows.map((row) => ({
+        answerThanks: row.answer_thanks,
+        answerState: row.answer_state,
+        answerWish: row.answer_wish,
+        answerRole: row.answer_role,
+        answerEnergy: row.answer_energy,
+      })),
     );
   }
   if (phase === "finale") {
@@ -283,6 +306,18 @@ async function currentState(): Promise<PublicState> {
       const key = `current-state:${participant.answer_state}`;
       answerCounts[key] = (answerCounts[key] ?? 0) + 1;
     }
+    if (participant.answer_wish) {
+      const key = `room-wish:${participant.answer_wish}`;
+      answerCounts[key] = (answerCounts[key] ?? 0) + 1;
+    }
+    if (participant.answer_role) {
+      const key = `team-role:${participant.answer_role}`;
+      answerCounts[key] = (answerCounts[key] ?? 0) + 1;
+    }
+    if (participant.answer_energy) {
+      const key = `final-energy:${participant.answer_energy}`;
+      answerCounts[key] = (answerCounts[key] ?? 0) + 1;
+    }
   }
   return {
     phase: session.phase,
@@ -291,12 +326,7 @@ async function currentState(): Promise<PublicState> {
     participants: active.map((participant) => ({
       id: participant.public_id,
       color: participant.color,
-      answeredCurrentQuestion:
-        session.phase === "question-1"
-          ? Boolean(participant.answer_thanks)
-          : session.phase === "question-2"
-            ? Boolean(participant.answer_state)
-            : false,
+      answeredCurrentQuestion: Boolean(answerForPhase(participant, session.phase)),
     })),
     answerCounts,
     collectiveLine: session.collective_line,
@@ -312,14 +342,25 @@ async function currentState(): Promise<PublicState> {
 
 async function participantRows(generation: number, activeOnly: boolean) {
   const query = activeOnly
-    ? `SELECT public_id, color, answer_thanks, answer_state, hold_completed, finale_eligible
+    ? `SELECT public_id, color, answer_thanks, answer_state, answer_wish, answer_role, answer_energy,
+       hold_completed, finale_eligible
        FROM minna_participants WHERE generation = ? AND last_seen >= ? ORDER BY public_id`
-    : `SELECT public_id, color, answer_thanks, answer_state, hold_completed, finale_eligible
+    : `SELECT public_id, color, answer_thanks, answer_state, answer_wish, answer_role, answer_energy,
+       hold_completed, finale_eligible
        FROM minna_participants WHERE generation = ? ORDER BY public_id`;
   const result = activeOnly
     ? await env.DB.prepare(query).bind(generation, Date.now() - ACTIVE_MS).all<ParticipantRow>()
     : await env.DB.prepare(query).bind(generation).all<ParticipantRow>();
   return result.results;
+}
+
+function answerForPhase(participant: ParticipantRow, phase: Phase) {
+  if (phase === "question-1") return participant.answer_thanks;
+  if (phase === "question-2") return participant.answer_state;
+  if (phase === "question-3") return participant.answer_wish;
+  if (phase === "question-4") return participant.answer_role;
+  if (phase === "question-5") return participant.answer_energy;
+  return null;
 }
 
 async function finaleProgress(generation: number) {

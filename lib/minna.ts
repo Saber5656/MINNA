@@ -18,6 +18,36 @@ export const QUESTIONS = [
       { id: "deploying", label: "デプロイ中" },
     ],
   },
+  {
+    id: "room-wish",
+    eyebrow: "QUESTION 03",
+    prompt: "この3分で、いちばん起きてほしいのは？",
+    options: [
+      { id: "laugh", label: "爆笑" },
+      { id: "wow", label: "鳥肌" },
+      { id: "connect", label: "一体感" },
+    ],
+  },
+  {
+    id: "team-role",
+    eyebrow: "QUESTION 04",
+    prompt: "いまの自分は、どの役割？",
+    options: [
+      { id: "boke", label: "ボケ" },
+      { id: "tsukkomi", label: "ツッコミ" },
+      { id: "support", label: "見守る人" },
+    ],
+  },
+  {
+    id: "final-energy",
+    eyebrow: "QUESTION 05",
+    prompt: "MINNA.exeに送る熱量は？",
+    options: [
+      { id: "calm", label: "30%" },
+      { id: "hot", label: "80%" },
+      { id: "maximum", label: "限界突破" },
+    ],
+  },
 ] as const;
 
 export type QuestionId = (typeof QUESTIONS)[number]["id"];
@@ -26,6 +56,9 @@ export type Phase =
   | "lobby"
   | "question-1"
   | "question-2"
+  | "question-3"
+  | "question-4"
+  | "question-5"
   | "reveal"
   | "finale"
   | "complete";
@@ -53,17 +86,18 @@ export interface PublicState {
 }
 
 export function questionForPhase(phase: Phase) {
-  if (phase === "question-1") return QUESTIONS[0];
-  if (phase === "question-2") return QUESTIONS[1];
-  return null;
+  const index = QUESTION_PHASES.indexOf(phase as (typeof QUESTION_PHASES)[number]);
+  return index < 0 ? null : QUESTIONS[index];
 }
 
 export function isQuestionId(value: unknown): value is QuestionId {
-  return value === "ai-thanks" || value === "current-state";
+  return QUESTIONS.some((question) => question.id === value);
 }
 
 export function isAnswerOption(value: unknown): value is AnswerOption {
-  return ["yes", "no", "awake", "sleepy", "deploying"].includes(String(value));
+  return QUESTIONS.some((question) =>
+    question.options.some((option) => option.id === value),
+  );
 }
 
 export function isClientId(value: unknown): value is string {
@@ -99,11 +133,20 @@ export function identityForClient(clientId: string) {
 }
 
 export function buildCollectiveLine(
-  participants: Array<{ answerThanks: string | null; answerState: string | null }>,
+  participants: Array<{
+    answerThanks: string | null;
+    answerState: string | null;
+    answerWish: string | null;
+    answerRole: string | null;
+    answerEnergy: string | null;
+  }>,
 ) {
   const thanks = participants.map((item) => item.answerThanks).filter(Boolean);
   const states = participants.map((item) => item.answerState).filter(Boolean);
-  if (thanks.length < 5 || states.length < 5) {
+  const wishes = participants.map((item) => item.answerWish).filter(Boolean);
+  const roles = participants.map((item) => item.answerRole).filter(Boolean);
+  const energies = participants.map((item) => item.answerEnergy).filter(Boolean);
+  if ([thanks, states, wishes, roles, energies].some((answers) => answers.length < 5)) {
     return "私はMINNA.exe。少人数でも、全員分の色でできています。集まってくれて、ありがとう。";
   }
   const percent = Math.round(
@@ -118,7 +161,76 @@ export function buildCollectiveLine(
       : deploying >= awake
         ? "お礼より先に、まずデプロイします。"
         : "今日は目だけでなく、会場まで覚醒しています。";
-  return `私はMINNA.exe。${percent}%がAIにありがとうと言う、礼儀正しい人格です。${callback}`;
+  const wish = majority(wishes);
+  const role = majority(roles);
+  const energy = majority(energies);
+  const wishLine = {
+    laugh: "目的は爆笑",
+    wow: "目的は鳥肌",
+    connect: "目的は一体感",
+  }[wish] ?? "目的は一体感";
+  const roleLine = {
+    boke: "ボケが主導権を握り",
+    tsukkomi: "ツッコミが全体を支え",
+    support: "見守る人がいちばん強く",
+  }[role] ?? "全員が役割を持ち";
+  const energyLine = {
+    calm: "熱量30%の省エネ運転です。",
+    hot: "熱量80%、まだ伸びしろがあります。",
+    maximum: "熱量は限界突破。もう誰にも停止できません。",
+  }[energy] ?? "熱量は限界突破です。";
+  return `私はMINNA.exe。${percent}%がAIにありがとうと言う、礼儀正しい人格です。${callback}${wishLine}、${roleLine}、${energyLine}`;
+}
+
+export const FACE_TARGET_COUNT = 68;
+
+export function makeSmileTargets(width: number, height: number, centerRatio: number) {
+  const points: Array<{ x: number; y: number }> = [];
+  const centerX = width * centerRatio;
+  const centerY = height * 0.48;
+  const radius = Math.min(width, height) * 0.32;
+  addArc(points, centerX, centerY, radius, 0, Math.PI * 2, 36, false);
+  addArc(points, centerX - radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, 8, false);
+  addArc(points, centerX + radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, 8, false);
+  addArc(points, centerX, centerY + radius * 0.08, radius * 0.48, Math.PI * 0.15, Math.PI * 0.85, 16, true);
+  return points;
+}
+
+export function smileTargetIndex(participantIndex: number, participantCount: number) {
+  if (participantCount <= 0) return 0;
+  if (participantCount >= FACE_TARGET_COUNT) return participantIndex % FACE_TARGET_COUNT;
+  return Math.floor((participantIndex * FACE_TARGET_COUNT) / participantCount);
+}
+
+const QUESTION_PHASES = [
+  "question-1",
+  "question-2",
+  "question-3",
+  "question-4",
+  "question-5",
+] as const;
+
+function majority(answers: string[]) {
+  const counts = new Map<string, number>();
+  for (const answer of answers) counts.set(answer, (counts.get(answer) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+}
+
+function addArc(
+  points: Array<{ x: number; y: number }>,
+  centerX: number,
+  centerY: number,
+  radius: number,
+  start: number,
+  end: number,
+  count: number,
+  includeEnd: boolean,
+) {
+  const denominator = includeEnd ? Math.max(1, count - 1) : count;
+  for (let index = 0; index < count; index += 1) {
+    const angle = start + ((end - start) * index) / denominator;
+    points.push({ x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius });
+  }
 }
 
 function hash(value: string) {

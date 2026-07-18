@@ -22,6 +22,13 @@
       "when": 1784355155793,
       "tag": "0002_smiling_ricochet",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784358606732,
+      "tag": "0003_ancient_jimmy_woo",
+      "breakpoints": true
     }
   ]
 }
