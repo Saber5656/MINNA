@@ -15,6 +15,7 @@ test("ships the audience and host product instead of the starter", async () => {
   assert.match(client, /会場を、/);
   assert.match(client, /YOUR PARTICLE/);
   assert.match(client, /hold-start/);
+  assert.match(client, /\^\[0-9a-f\]\{64\}\$/);
   assert.match(join, /mode="audience"/);
   assert.match(host, /mode="host"/);
   assert.match(host, /chatGPTSignInPath/);

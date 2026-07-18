@@ -364,11 +364,14 @@ function serverClientId() {
 
 function getRoomCode() {
   const fromUrl = new URLSearchParams(location.search).get("room");
-  if (fromUrl && /^[0-9a-f]{32}$/.test(fromUrl)) {
+  if (fromUrl && /^[0-9a-f]{64}$/.test(fromUrl)) {
     sessionStorage.setItem("minna-sites-room", fromUrl);
     return fromUrl;
   }
-  return sessionStorage.getItem("minna-sites-room") ?? "";
+  const stored = sessionStorage.getItem("minna-sites-room");
+  if (stored && /^[0-9a-f]{64}$/.test(stored)) return stored;
+  sessionStorage.removeItem("minna-sites-room");
+  return "";
 }
 
 function serverRoomCode() {
