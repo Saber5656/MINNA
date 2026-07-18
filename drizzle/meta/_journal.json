@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1784354343156,
+      "tag": "0000_curvy_sunfire",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784354941103,
+      "tag": "0001_ordinary_wasp",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784355155793,
+      "tag": "0002_smiling_ricochet",
+      "breakpoints": true
+    }
+  ]
+}

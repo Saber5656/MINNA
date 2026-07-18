@@ -1,0 +1,1 @@
+ALTER TABLE `minna_sessions` ADD `room_code` text;
