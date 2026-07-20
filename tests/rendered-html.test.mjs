@@ -5,8 +5,12 @@ import {
   MIN_SMILE_DOT_COUNT,
   QUESTIONS,
   buildCollectiveLine,
+  defaultRoomContent,
   makeSmileTargets,
   questionForPhase,
+  roomContentFromJson,
+  roomContentForAudience,
+  roomContentFromUnknown,
   smileProgress,
 } from "../lib/minna.ts";
 
@@ -23,6 +27,9 @@ test("ships the audience and host product instead of the starter", async () => {
   assert.match(client, /会場を、/);
   assert.match(client, /YOUR PARTICLE/);
   assert.match(client, /hold-start/);
+  assert.match(client, /configure-content/);
+  assert.match(client, /FINAL PUNCHLINE/);
+  assert.match(client, /Mouse/);
   assert.match(client, /\^\[0-9a-f\]\{64\}\$/);
   assert.match(join, /mode="audience"/);
   assert.match(host, /mode="host"/);
@@ -33,12 +40,13 @@ test("ships the audience and host product instead of the starter", async () => {
 });
 
 test("declares the shared database and migration", async () => {
-  const [hosting, migration, answersMigration, sessionsMigration, constraintsMigration, route] = await Promise.all([
+  const [hosting, migration, answersMigration, sessionsMigration, constraintsMigration, contentMigration, route] = await Promise.all([
     readFile(new URL(".openai/hosting.json", root), "utf8"),
     readFile(new URL("drizzle/0000_curvy_sunfire.sql", root), "utf8"),
     readFile(new URL("drizzle/0003_ancient_jimmy_woo.sql", root), "utf8"),
     readFile(new URL("drizzle/0005_first_maginty.sql", root), "utf8"),
     readFile(new URL("drizzle/0006_safe_speedball.sql", root), "utf8"),
+    readFile(new URL("drizzle/0007_amazing_kinsey_walden.sql", root), "utf8"),
     readFile(new URL("app/api/session/route.ts", root), "utf8"),
   ]);
   assert.equal(JSON.parse(hosting).d1, "DB");
@@ -53,6 +61,7 @@ test("declares the shared database and migration", async () => {
   assert.match(constraintsMigration, /PRIMARY KEY\(`session_id`, `secret_id`\)/);
   assert.match(constraintsMigration, /minna_sessions_target_count_check/);
   assert.match(constraintsMigration, /minna_sessions_room_code_idx/);
+  assert.match(contentMigration, /ADD `content_json` text/);
   assert.match(route, /special/);
   assert.match(route, /HOLD_MS = 3_000/);
   assert.match(route, /FINALE_MS = 20_000/);
@@ -60,6 +69,14 @@ test("declares the shared database and migration", async () => {
   assert.ok(route.includes('!/^[0-9a-f]{64}$/.test(value)'));
   assert.doesNotMatch(route, /generation = \?\) < 500/);
   assert.match(route, /target-below-participants/);
+  assert.match(route, /MAX_JSON_BODY_BYTES = 16_384/);
+  assert.match(route, /request\.body\.getReader\(\)/);
+  assert.match(route, /receivedBytes \+= value\.byteLength/);
+  assert.match(route, /receivedBytes > MAX_JSON_BODY_BYTES/);
+  assert.match(route, /await reader\.cancel\(\)/);
+  assert.match(route, /UPDATE minna_sessions SET content_json = \?, updated_at = \? WHERE id = \? AND phase = 'lobby'/);
+  assert.match(route, /\.bind\(JSON\.stringify\(content\), Date\.now\(\), sessionId\)/);
+  assert.match(route, /if \(result\.meta\.changes === 0\) throw new RoomContentLockedError\(\)/);
   assert.match(route, /special = 0, room_code = \?, updated_at = \?/);
   const resetBlock = route.slice(
     route.indexOf('if (action === "reset")'),
@@ -67,6 +84,44 @@ test("declares the shared database and migration", async () => {
   );
   assert.match(resetBlock, /DELETE FROM minna_participants WHERE session_id = \?[^]*?bind\(session\.id\)/);
   assert.match(resetBlock, /DELETE FROM minna_fireworks WHERE session_id = \?[^]*?bind\(session\.id\)/);
+});
+
+test("validates host-authored questions and finale punchline", () => {
+  const defaults = defaultRoomContent();
+  const candidate = {
+    questions: defaults.questions.map((question, index) => ({
+      ...question,
+      prompt: index === 0 ? "  今日いちばん使ったAIは？  " : question.prompt,
+      options: question.options.map((option, optionIndex) => ({
+        ...option,
+        label: index === 0 && optionIndex === 0 ? "  ChatGPT  " : option.label,
+      })),
+    })),
+    finalePunchline: "  次のアップデートは、会場全員です。  ",
+  };
+  const parsed = roomContentFromUnknown(candidate);
+  assert.ok(parsed);
+  assert.equal(questionForPhase("question-1", parsed.questions)?.prompt, "今日いちばん使ったAIは？");
+  assert.equal(parsed.questions[0]?.options[0]?.label, "ChatGPT");
+  assert.equal(parsed.finalePunchline, "次のアップデートは、会場全員です。");
+  assert.deepEqual(roomContentFromJson(JSON.stringify(candidate)), parsed);
+  assert.equal(roomContentFromUnknown({ ...candidate, finalePunchline: " " }), null);
+  assert.equal(roomContentFromUnknown({ ...candidate, questions: candidate.questions.slice(1) }), null);
+  assert.equal(roomContentFromUnknown({
+    ...candidate,
+    questions: candidate.questions.map((question, index) => index === 0
+      ? { ...question, prompt: `${" ".repeat(80)}x` }
+      : question),
+  }), null);
+  assert.deepEqual(roomContentFromJson("{"), defaults);
+  assert.deepEqual(roomContentFromJson(JSON.stringify({ ...candidate, questions: [{ id: "wrong" }] })), defaults);
+
+  const hidden = roomContentForAudience(parsed, "question-2");
+  assert.equal(hidden.questions[0]?.prompt, defaults.questions[0]?.prompt);
+  assert.equal(hidden.questions[1]?.prompt, parsed.questions[1]?.prompt);
+  assert.equal(hidden.questions[2]?.prompt, defaults.questions[2]?.prompt);
+  assert.equal(hidden.finalePunchline, "");
+  assert.equal(roomContentForAudience(parsed, "complete").finalePunchline, parsed.finalePunchline);
 });
 
 test("runs five audience questions through the collective reveal", () => {

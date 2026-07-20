@@ -39,6 +39,12 @@ test("applies every migration and enforces session-owned identity", async () => 
   const roomB = "b".repeat(64);
   insertSession.run("room-a", "owner-a", 2, roomA);
   insertSession.run("room-b", "owner-b", 2, roomB);
+  const configureContent = db.prepare(
+    "UPDATE minna_sessions SET content_json = ?, updated_at = ? WHERE id = ? AND phase = 'lobby'",
+  );
+  assert.equal(configureContent.run('{"room":"a"}', 10, "room-a").changes, 1);
+  db.prepare("UPDATE minna_sessions SET phase = 'question-1' WHERE id = ?").run("room-b");
+  assert.equal(configureContent.run('{"room":"b"}', 11, "room-b").changes, 0);
 
   const insertParticipant = db.prepare(
     `INSERT INTO minna_participants
@@ -52,6 +58,8 @@ test("applies every migration and enforces session-owned identity", async () => 
   assert.throws(() => insertParticipant.run("room-a", "shared-device", "duplicate"));
   assert.throws(() => insertSession.run("room-c", "owner-c", 2, roomA));
   assert.throws(() => insertSession.run("room-c", "owner-c", 501, "c".repeat(64)));
+  assert.equal(db.prepare("SELECT content_json FROM minna_sessions WHERE id = 'room-a'").get().content_json, '{"room":"a"}');
+  assert.equal(db.prepare("SELECT content_json FROM minna_sessions WHERE id = 'room-b'").get().content_json, null);
   db.close();
 });
 
@@ -124,7 +132,7 @@ test("upgrades populated legacy data without losing room state", async () => {
   assert.deepEqual(
     { ...db.prepare(
       `SELECT id, owner_id, target_count, phase, generation, collective_line,
-       deadline_at, special, room_code, updated_at FROM minna_sessions WHERE id = 'main'`,
+       deadline_at, special, room_code, content_json, updated_at FROM minna_sessions WHERE id = 'main'`,
     ).get() },
     {
       id: "main",
@@ -136,6 +144,7 @@ test("upgrades populated legacy data without losing room state", async () => {
       deadline_at: 12345,
       special: 1,
       room_code: "d".repeat(64),
+      content_json: null,
       updated_at: 99,
     },
   );

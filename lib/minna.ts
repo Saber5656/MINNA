@@ -52,6 +52,19 @@ export const QUESTIONS = [
 
 export type QuestionId = (typeof QUESTIONS)[number]["id"];
 export type AnswerOption = (typeof QUESTIONS)[number]["options"][number]["id"];
+export interface PublicQuestion {
+  id: QuestionId;
+  eyebrow: string;
+  prompt: string;
+  options: ReadonlyArray<{ id: AnswerOption; label: string }>;
+}
+
+export interface RoomContent {
+  questions: PublicQuestion[];
+  finalePunchline: string;
+}
+
+export const DEFAULT_FINALE_PUNCHLINE = "以上、最新AIのデモでした。なお、計算資源は会場の皆さんです。";
 export type Phase =
   | "lobby"
   | "question-1"
@@ -79,12 +92,15 @@ export interface PublicFirework {
 export interface PublicState {
   phase: Phase;
   generation: number;
+  updatedAt: number;
   targetCount: number;
   participantCount: number;
   participants: PublicParticipant[];
   fireworks: PublicFirework[];
   answerCounts: Record<string, number>;
   collectiveLine: string | null;
+  questions: PublicQuestion[];
+  finalePunchline: string;
   smile: {
     minimumDotCount: number;
     dotCount: number;
@@ -100,9 +116,76 @@ export interface PublicState {
   };
 }
 
-export function questionForPhase(phase: Phase) {
+export function questionForPhase(phase: Phase, questions: readonly PublicQuestion[] = QUESTIONS) {
   const index = QUESTION_PHASES.indexOf(phase as (typeof QUESTION_PHASES)[number]);
-  return index < 0 ? null : QUESTIONS[index];
+  return index < 0 ? null : questions[index] ?? null;
+}
+
+export function defaultRoomContent(): RoomContent {
+  return {
+    questions: QUESTIONS.map((question) => ({
+      id: question.id,
+      eyebrow: question.eyebrow,
+      prompt: question.prompt,
+      options: question.options.map((option) => ({ id: option.id, label: option.label })),
+    })),
+    finalePunchline: DEFAULT_FINALE_PUNCHLINE,
+  };
+}
+
+export function roomContentFromJson(value: string | null): RoomContent {
+  if (!value) return defaultRoomContent();
+  try {
+    return roomContentFromUnknown(JSON.parse(value)) ?? defaultRoomContent();
+  } catch {
+    return defaultRoomContent();
+  }
+}
+
+export function roomContentFromUnknown(value: unknown): RoomContent | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { questions?: unknown; finalePunchline?: unknown };
+  if (!Array.isArray(candidate.questions) || candidate.questions.length !== QUESTIONS.length) return null;
+  if (!isTrimmedText(candidate.finalePunchline, 1, 120)) return null;
+
+  const questions: PublicQuestion[] = [];
+  for (const [index, expected] of QUESTIONS.entries()) {
+    const question = candidate.questions[index] as Record<string, unknown> | undefined;
+    if (
+      !question ||
+      question.id !== expected.id ||
+      !isTrimmedText(question.prompt, 1, 80) ||
+      !Array.isArray(question.options) ||
+      question.options.length !== expected.options.length
+    ) {
+      return null;
+    }
+    const options: Array<{ id: AnswerOption; label: string }> = [];
+    for (const [optionIndex, expectedOption] of expected.options.entries()) {
+      const option = question.options[optionIndex] as Record<string, unknown> | undefined;
+      if (!option || option.id !== expectedOption.id || !isTrimmedText(option.label, 1, 24)) return null;
+      options.push({ id: expectedOption.id, label: option.label.trim() });
+    }
+    questions.push({
+      id: expected.id,
+      eyebrow: expected.eyebrow,
+      prompt: question.prompt.trim(),
+      options,
+    });
+  }
+  return { questions, finalePunchline: candidate.finalePunchline.trim() };
+}
+
+export function roomContentForAudience(content: RoomContent, phase: Phase): RoomContent {
+  const defaults = defaultRoomContent();
+  const currentQuestionIndex = /^question-([1-5])$/.exec(phase)?.[1];
+  const visibleIndex = currentQuestionIndex ? Number.parseInt(currentQuestionIndex, 10) - 1 : -1;
+  return {
+    questions: content.questions.map((question, index) =>
+      index === visibleIndex ? question : defaults.questions[index] ?? question,
+    ),
+    finalePunchline: phase === "complete" ? content.finalePunchline : "",
+  };
 }
 
 export function isQuestionId(value: unknown): value is QuestionId {
@@ -244,6 +327,15 @@ function majority(answers: string[]) {
   const counts = new Map<string, number>();
   for (const answer of answers) counts.set(answer, (counts.get(answer) ?? 0) + 1);
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+}
+
+function isTrimmedText(value: unknown, min: number, max: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= max &&
+    value.trim().length >= min &&
+    value.trim().length <= max
+  );
 }
 
 function addArc(

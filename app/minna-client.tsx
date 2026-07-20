@@ -3,28 +3,46 @@
 import {
   ArrowRight,
   Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  ChevronsUpDown,
+  ListChecks,
+  Mouse,
   PartyPopper,
   QrCode,
   RotateCcw,
+  Save,
   Sparkles,
   Users,
   Volume2,
+  X,
   Zap,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { identityForClient, questionForPhase, type PublicFirework, type PublicState } from "../lib/minna";
+import {
+  defaultRoomContent,
+  identityForClient,
+  questionForPhase,
+  type PublicFirework,
+  type PublicState,
+  type RoomContent,
+} from "../lib/minna";
 import { ParticleStage, type Arrival } from "./particle-stage";
 
 const EMPTY_STATE: PublicState = {
   phase: "lobby",
   generation: 1,
+  updatedAt: 0,
   targetCount: 0,
   participantCount: 0,
   participants: [],
   fireworks: [],
   answerCounts: {},
   collectiveLine: null,
+  questions: defaultRoomContent().questions,
+  finalePunchline: defaultRoomContent().finalePunchline,
   smile: { minimumDotCount: 32, dotCount: 32, filledDotCount: 0, complete: false },
   finale: { denominator: 0, completed: 0, progress: 0, special: false, deadlineAt: null },
 };
@@ -44,6 +62,10 @@ function HostExperience() {
   const [targetDraft, setTargetDraft] = useState("68");
   const [configuring, setConfiguring] = useState(false);
   const [configError, setConfigError] = useState("");
+  const [contentOpen, setContentOpen] = useState(false);
+  const [contentDraft, setContentDraft] = useState<RoomContent>(() => defaultRoomContent());
+  const [contentSaving, setContentSaving] = useState(false);
+  const [contentError, setContentError] = useState("");
   const previousRef = useRef<PublicState | null>(null);
   const roomCodeRef = useRef("");
   const seenFireworksRef = useRef(new Set<number>());
@@ -51,6 +73,7 @@ function HostExperience() {
 
   const acceptState = useCallback((next: PublicState) => {
     const previous = previousRef.current;
+    if (previous && isStaleState(previous, next)) return false;
     const previousMap = new Map(previous?.participants.map((item) => [item.id, item]) ?? []);
     for (const participant of next.participants) {
       const before = previousMap.get(participant.id);
@@ -70,12 +93,27 @@ function HostExperience() {
     previousRef.current = next;
     setState(next);
     setConnected(true);
+    return true;
   }, []);
 
   const acceptHostState = useCallback((next: PublicState & { joinCode?: string }) => {
-    const incoming = next.fireworks.filter((firework) => !seenFireworksRef.current.has(firework.id));
+    const previous = previousRef.current;
+    if (!acceptState(next)) return;
+    const finaleJustCompleted = previous?.phase !== "complete" && next.phase === "complete";
+    const finaleFireworks: PublicFirework[] = finaleJustCompleted
+      ? Array.from({ length: 14 }, (_, index) => ({
+          id: -(Date.now() + index),
+          x: 0.1 + ((index * 37) % 80) / 100,
+          y: 0.12 + ((index * 23) % 52) / 100,
+          color: ["#4fc3ff", "#f8d343", "#ff624d", "#a9e64d"][index % 4] ?? "#ffffff",
+        }))
+      : [];
+    const incoming = [
+      ...next.fireworks.filter((firework) => !seenFireworksRef.current.has(firework.id)),
+      ...finaleFireworks,
+    ];
     if (incoming.length > 0) {
-      for (const firework of incoming) seenFireworksRef.current.add(firework.id);
+      for (const firework of next.fireworks) seenFireworksRef.current.add(firework.id);
       setActiveFireworks((current) => [...current, ...incoming].slice(-80));
       for (const firework of incoming) {
         const timer = window.setTimeout(() => {
@@ -84,7 +122,6 @@ function HostExperience() {
         fireworkTimersRef.current.push(timer);
       }
     }
-    acceptState(next);
     if (!next.joinCode || next.joinCode === roomCodeRef.current) return;
     roomCodeRef.current = next.joinCode;
     const url = `${location.origin}/join?room=${next.joinCode}`;
@@ -98,6 +135,15 @@ function HostExperience() {
   useEffect(() => () => {
     for (const timer of fireworkTimersRef.current) window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!contentOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContentOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [contentOpen]);
 
   useEffect(() => {
     let active = true;
@@ -151,6 +197,64 @@ function HostExperience() {
     }
   };
 
+  const targetMinimum = Math.max(1, state.participantCount);
+  const parsedTargetDraft = Number.parseInt(targetDraft, 10);
+  const previewTarget = Math.min(500, Math.max(targetMinimum, Number.isInteger(parsedTargetDraft) ? parsedTargetDraft : targetMinimum));
+  const previewDotCount = Math.max(state.smile.minimumDotCount, previewTarget);
+  const adjustTarget = (delta: number) => {
+    setTargetDraft((current) => {
+      const parsed = Number.parseInt(current, 10);
+      const next = Math.min(500, Math.max(targetMinimum, (Number.isInteger(parsed) ? parsed : targetMinimum) + delta));
+      return String(next);
+    });
+  };
+  const normalizeTargetDraft = () => {
+    const parsed = Number.parseInt(targetDraft, 10);
+    setTargetDraft(String(Math.min(500, Math.max(targetMinimum, Number.isInteger(parsed) ? parsed : targetMinimum))));
+  };
+  const openContentSettings = () => {
+    setContentDraft({
+      questions: state.questions.map((question) => ({
+        ...question,
+        options: question.options.map((option) => ({ ...option })),
+      })),
+      finalePunchline: state.finalePunchline,
+    });
+    setContentError("");
+    setContentOpen(true);
+  };
+  const updateQuestionPrompt = (questionIndex: number, prompt: string) => {
+    setContentDraft((current) => ({
+      ...current,
+      questions: current.questions.map((question, index) => index === questionIndex ? { ...question, prompt } : question),
+    }));
+  };
+  const updateOptionLabel = (questionIndex: number, optionIndex: number, label: string) => {
+    setContentDraft((current) => ({
+      ...current,
+      questions: current.questions.map((question, index) => index === questionIndex
+        ? { ...question, options: question.options.map((option, innerIndex) => innerIndex === optionIndex ? { ...option, label } : option) }
+        : question),
+    }));
+  };
+  const saveContent = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setContentSaving(true);
+    setContentError("");
+    try {
+      acceptHostState(await postHost("configure-content", { content: contentDraft }));
+      setContentOpen(false);
+    } catch (error) {
+      if (error instanceof HostAuthError && error.status === 401) {
+        location.href = `/signin-with-chatgpt?return_to=${encodeURIComponent("/host")}`;
+      } else {
+        setContentError("入力内容を確認してください");
+      }
+    } finally {
+      setContentSaving(false);
+    }
+  };
+
   const speak = () => {
     if (!state.collectiveLine) return;
     speechSynthesis.cancel();
@@ -161,11 +265,12 @@ function HostExperience() {
   };
 
   const content = hostCopy(state);
-  const question = questionForPhase(state.phase);
+  const question = questionForPhase(state.phase, state.questions);
   const answered = question
     ? state.participants.filter((participant) => participant.answeredCurrentQuestion).length
     : 0;
   const finalePercent = Math.round(state.finale.progress * 100);
+  const copyText = question?.prompt ?? (state.phase === "reveal" ? state.collectiveLine ?? "" : state.phase === "complete" ? state.finalePunchline : "");
 
   return (
     <div className="host-shell" data-phase={state.phase}>
@@ -187,7 +292,7 @@ function HostExperience() {
         <div className="fireworks-layer" aria-hidden="true">
           {activeFireworks.map((firework) => <FireworkBurst key={firework.id} firework={firework} />)}
         </div>
-        <section className="host-copy" aria-live="polite">
+        <section className={`host-copy ${copyLengthClass(copyText)}`} aria-live="polite">
           <p className="phase-marker">{content.marker}</p>
           <h1>{content.title}</h1>
           <p className="host-subtitle">{content.subtitle}</p>
@@ -203,13 +308,40 @@ function HostExperience() {
           <aside className="join-panel">
             <form className="room-size-form" onSubmit={configureRoom}>
               <label htmlFor="room-size"><Users size={17} />会場人数</label>
-              <div>
-                <input id="room-size" type="number" min={Math.max(1, state.participantCount)} max="500" inputMode="numeric" value={targetDraft} onChange={(event) => setTargetDraft(event.target.value)} />
+              <div className="room-stepper-row">
+                <div
+                  className="room-number-control"
+                  onWheel={(event) => {
+                    event.preventDefault();
+                    adjustTarget(event.deltaY < 0 ? 1 : -1);
+                  }}
+                >
+                  <input
+                    id="room-size"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={targetDraft}
+                    onChange={(event) => setTargetDraft(event.target.value.replace(/\D/g, "").slice(0, 3))}
+                    onBlur={normalizeTargetDraft}
+                    aria-label="会場人数"
+                  />
+                  <div className="stepper-buttons">
+                    <button type="button" onClick={() => adjustTarget(1)} aria-label="会場人数を1人増やす" title="1人増やす"><ChevronUp /></button>
+                    <button type="button" onClick={() => adjustTarget(-1)} aria-label="会場人数を1人減らす" title="1人減らす"><ChevronDown /></button>
+                  </div>
+                </div>
                 <button type="submit" disabled={configuring} aria-label="会場人数を設定" title="会場人数を設定"><Check /></button>
               </div>
-              <p>{state.smile.dotCount} DOT SMILE</p>
+              <div className="room-number-meta">
+                <span>{previewDotCount} DOT SMILE</span>
+                <span className="wheel-cue" title="マウスホイールでも変更できます" aria-label="マウスホイールでも人数を変更できます"><Mouse /><span>SCROLL</span><ChevronsUpDown /></span>
+              </div>
               {configError && <p className="room-size-error" role="alert">{configError}</p>}
             </form>
+            <button className="content-settings-trigger" type="button" onClick={openContentSettings}>
+              <ListChecks /><span>質問と最後のオチ</span><ChevronRight />
+            </button>
             {state.targetCount > 0 && (
               <>
                 <div className="join-panel-title"><QrCode size={18} /><span>SCAN TO JOIN</span></div>
@@ -230,6 +362,44 @@ function HostExperience() {
           </section>
         )}
       </main>
+      {contentOpen && (
+        <div className="host-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setContentOpen(false); }}>
+          <form className="content-dialog" onSubmit={saveContent} role="dialog" aria-modal="true" aria-labelledby="content-dialog-title">
+            <header>
+              <div><p>ROOM CONTENT</p><h2 id="content-dialog-title">質問と最後のオチ</h2></div>
+              <IconButton type="button" label="設定を閉じる" onClick={() => setContentOpen(false)}><X /></IconButton>
+            </header>
+            <div className="content-dialog-scroll">
+              {contentDraft.questions.map((draftQuestion, questionIndex) => (
+                <fieldset className="question-editor" key={draftQuestion.id}>
+                  <legend>{draftQuestion.eyebrow}</legend>
+                  <label>
+                    <span>質問</span>
+                    <textarea maxLength={80} value={draftQuestion.prompt} onChange={(event) => updateQuestionPrompt(questionIndex, event.target.value)} required />
+                  </label>
+                  <div className="option-edit-grid">
+                    {draftQuestion.options.map((option, optionIndex) => (
+                      <label key={option.id}>
+                        <span>選択肢 {optionIndex + 1}</span>
+                        <input maxLength={24} value={option.label} onChange={(event) => updateOptionLabel(questionIndex, optionIndex, event.target.value)} required />
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ))}
+              <label className="punchline-editor">
+                <span>FINAL PUNCHLINE</span>
+                <textarea maxLength={120} value={contentDraft.finalePunchline} onChange={(event) => setContentDraft((current) => ({ ...current, finalePunchline: event.target.value }))} required />
+              </label>
+              {contentError && <p className="content-error" role="alert">{contentError}</p>}
+            </div>
+            <footer>
+              <button type="button" className="dialog-cancel" onClick={() => setContentOpen(false)}>キャンセル</button>
+              <button type="submit" className="dialog-save" disabled={contentSaving}><Save />保存</button>
+            </footer>
+          </form>
+        </div>
+      )}
       <footer className="host-controls">
         <div className="control-status"><span className={`status-dot ${connected && !controlLocked ? "" : "offline"}`} />{controlLocked ? "CONTROL LOCKED" : connected ? "LIVE" : "RECONNECTING"}</div>
         <div className="control-actions">
@@ -254,12 +424,16 @@ function AudienceExperience() {
   const roomCode = useSyncExternalStore(noopSubscribe, getRoomCode, serverRoomCode);
   const identity = useMemo(() => identityForClient(clientId), [clientId]);
   const phaseRef = useRef(state.phase);
+  const previousRef = useRef<PublicState | null>(null);
   const holdStartedRef = useRef(0);
   const holdFrameRef = useRef(0);
 
   const acceptState = useCallback((next: PublicState) => {
+    const previous = previousRef.current;
+    if (previous && isStaleState(previous, next)) return;
     if (phaseRef.current !== next.phase) setAnswered("");
     phaseRef.current = next.phase;
+    previousRef.current = next;
     setState(next);
     setConnected(true);
   }, []);
@@ -341,7 +515,7 @@ function AudienceExperience() {
     }
   };
 
-  const question = questionForPhase(state.phase);
+  const question = questionForPhase(state.phase, state.questions);
   const self = state.participants.find((participant) => participant.id === identity.publicId);
   const alreadyAnswered = Boolean(question && (answered === question.id || self?.answeredCurrentQuestion));
 
@@ -358,7 +532,7 @@ function AudienceExperience() {
   }
 
   return (
-    <div className="audience-shell" style={{ "--personal": identity.color } as React.CSSProperties}>
+    <div className="audience-shell" data-phase={state.phase} style={{ "--personal": identity.color } as React.CSSProperties}>
       <header className="audience-header">
         <div className="wordmark">MINNA<span>.exe</span></div>
         <div className="personal-mark"><span className="personal-dot" />YOUR PARTICLE</div>
@@ -368,10 +542,10 @@ function AudienceExperience() {
         {question && !alreadyAnswered && (
           <section className="audience-state question-state">
             <p className="audience-eyebrow">{question.eyebrow}</p>
-            <h1>{question.prompt}</h1>
+            <h1 className={copyLengthClass(question.prompt)}>{question.prompt}</h1>
             <div className={`answer-grid ${question.options.length === 3 ? "three" : ""}`}>
               {question.options.map((option) => (
-                <button key={option.id} disabled={sending} onClick={() => void answer(question.id, option.id)}>{option.label}</button>
+                <button className={copyLengthClass(option.label, 10, 18)} key={option.id} disabled={sending} onClick={() => void answer(question.id, option.id)}>{option.label}</button>
               ))}
             </div>
           </section>
@@ -395,7 +569,7 @@ function AudienceExperience() {
             <p>離すとリセットされます。</p>
           </section>
         )}
-        {state.phase === "complete" && <AudienceMessage eyebrow={state.finale.special ? "SPECIAL SYNC" : "MINNA COMPLETE"} title={<>集まってくれて、<br />ありがとう。</>} text="あなたの粒は、顔の中に残っています。" orb />}
+        {state.phase === "complete" && <AudienceMessage eyebrow={`MINNA-${state.participantCount}B / TRAINING COMPLETE`} title={<>この会場、<br />全員でひとりのAI。</>} text={state.finalePunchline} orb />}
       </main>
       <footer className="audience-footer">
         <div className="audience-connection"><span className={`status-dot ${connected ? "" : "offline"}`} />{connected ? "CONNECTED" : "RECONNECTING"}</div>
@@ -458,14 +632,42 @@ function IconButton({ label, children, accent, hot, ...props }: React.ButtonHTML
 }
 
 function hostCopy(state: PublicState) {
-  const question = questionForPhase(state.phase);
+  const question = questionForPhase(state.phase, state.questions);
   if (state.targetCount === 0) return { marker: "ROOM SETUP", title: <>会場人数を、<br />入力。</>, subtitle: "1〜500 PEOPLE" };
   if (state.phase === "lobby" && state.smile.complete) return { marker: "EVERYONE IS HERE", title: <>ニッコリ、<br />完成。</>, subtitle: `${state.participantCount} / ${state.targetCount} JOINED` };
   if (state.phase === "lobby") return { marker: "WAITING ROOM", title: <>会場を、<br />ひとりにする。</>, subtitle: `あと ${Math.max(0, state.targetCount - state.participantCount)} 人で完成` };
   if (question) return { marker: question.eyebrow, title: question.prompt, subtitle: "READY" };
   if (state.phase === "reveal") return { marker: "MINNA.exe IS ALIVE", title: state.collectiveLine ?? "MINNA.exe", subtitle: "WE ARE ONE ROOM" };
   if (state.phase === "finale") return { marker: "FINAL SYNC", title: "3秒、みんなで長押し。", subtitle: "顔にエネルギーを送ってください。" };
-  return { marker: state.finale.special ? "SPECIAL FINALE" : "MINNA COMPLETE", title: "集まってくれて、ありがとう。", subtitle: "AIを使ったのではなく、会場全員がAIになりました。" };
+  return {
+    marker: `MINNA-${state.participantCount}B / TRAINING COMPLETE`,
+    title: <>この会場、<br />全員でひとりのAI。</>,
+    subtitle: state.finalePunchline,
+  };
+}
+
+const PHASE_ORDER: PublicState["phase"][] = [
+  "lobby",
+  "question-1",
+  "question-2",
+  "question-3",
+  "question-4",
+  "question-5",
+  "reveal",
+  "finale",
+  "complete",
+];
+
+function isStaleState(previous: PublicState, next: PublicState) {
+  if (next.generation !== previous.generation) return next.generation < previous.generation;
+  if (next.updatedAt !== previous.updatedAt) return next.updatedAt < previous.updatedAt;
+  return PHASE_ORDER.indexOf(next.phase) < PHASE_ORDER.indexOf(previous.phase);
+}
+
+function copyLengthClass(value: string, longAt = 32, extraLongAt = 60) {
+  if (value.length > extraLongAt) return "copy-extra-long";
+  if (value.length > longAt) return "copy-long";
+  return "";
 }
 
 function getClientId() {
@@ -517,7 +719,7 @@ async function postAudience(
   return response.json() as Promise<PublicState>;
 }
 
-async function postHost(action: string, extra: Record<string, string | number> = {}) {
+async function postHost(action: string, extra: Record<string, unknown> = {}) {
   const response = await fetch("/api/session", {
     method: "POST",
     headers: { "content-type": "application/json" },

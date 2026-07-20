@@ -6,11 +6,15 @@ import {
   isAnswerOption,
   isClientId,
   isQuestionId,
+  roomContentFromJson,
+  roomContentForAudience,
+  roomContentFromUnknown,
   smileProgress,
   type AnswerOption,
   type Phase,
   type PublicState,
   type QuestionId,
+  type RoomContent,
 } from "../../../lib/minna";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +23,9 @@ const LEGACY_SESSION_ID = "main";
 const ACTIVE_MS = 12_000;
 const HOLD_MS = 3_000;
 const FINALE_MS = 20_000;
+const MAX_JSON_BODY_BYTES = 16_384;
 const AUDIENCE_ACTIONS = ["join", "heartbeat", "answer", "hold-start", "hold-stop", "firework"];
-const HOST_ACTIONS = ["open-room", "configure-room", "tick", "next", "fire", "reset"];
+const HOST_ACTIONS = ["open-room", "configure-room", "configure-content", "tick", "next", "fire", "reset"];
 const ANSWER_CONFIG = {
   "ai-thanks": { phase: "question-1", column: "answer_thanks", options: ["yes", "no"] },
   "current-state": { phase: "question-2", column: "answer_state", options: ["awake", "sleepy", "deploying"] },
@@ -39,6 +44,8 @@ interface SessionRow {
   deadline_at: number | null;
   special: number;
   room_code: string | null;
+  content_json: string | null;
+  updated_at: number;
 }
 
 interface ParticipantRow {
@@ -77,7 +84,7 @@ export async function POST(request: Request) {
     if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
       return error("json-required", 415);
     }
-    const payload = (await request.json()) as Record<string, unknown>;
+    const payload = await readJsonPayload(request);
     const action = String(payload.action);
 
     if (AUDIENCE_ACTIONS.includes(action)) {
@@ -116,6 +123,11 @@ export async function POST(request: Request) {
         if (!isTargetCount(payload.targetCount)) return error("invalid-target-count", 400);
         await configureRoom(session.id, payload.targetCount);
       }
+      if (action === "configure-content") {
+        const content = roomContentFromUnknown(payload.content);
+        if (!content) return error("invalid-room-content", 400);
+        await configureContent(session.id, content);
+      }
       if (action === "tick") await advanceFinale(session.id);
       if (["next", "fire", "reset"].includes(action)) await hostAction(session.id, action);
       const joinCode = await ensureRoomCode(session.id);
@@ -130,7 +142,7 @@ export async function POST(request: Request) {
 
 async function readSession(sessionId: string) {
   const session = await env.DB.prepare(
-    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code
+    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code, content_json, updated_at
      FROM minna_sessions WHERE id = ?`,
   )
     .bind(sessionId)
@@ -142,7 +154,7 @@ async function readSession(sessionId: string) {
 async function sessionForRoomCode(value: unknown) {
   if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) return null;
   return env.DB.prepare(
-    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code
+    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code, content_json, updated_at
      FROM minna_sessions WHERE room_code = ?`,
   )
     .bind(value)
@@ -158,7 +170,7 @@ async function hostSessionForRequest(request: Request) {
 
 async function ensureHostSession(ownerId: string) {
   const existing = await env.DB.prepare(
-    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code
+    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code, content_json, updated_at
      FROM minna_sessions WHERE owner_id = ?`,
   )
     .bind(ownerId)
@@ -168,7 +180,7 @@ async function ensureHostSession(ownerId: string) {
   const claimed = await env.DB.prepare(
     `UPDATE minna_sessions SET owner_id = ?, target_count = 0, phase = 'lobby',
      generation = generation + 1, collective_line = NULL, deadline_at = NULL,
-     special = 0, room_code = ?, updated_at = ?
+     special = 0, room_code = ?, content_json = NULL, updated_at = ?
      WHERE id = ? AND owner_id IS NULL`,
   )
     .bind(ownerId, createRoomCode(), Date.now(), LEGACY_SESSION_ID)
@@ -190,7 +202,7 @@ async function ensureHostSession(ownerId: string) {
     .bind(sessionId, ownerId, createRoomCode(), Date.now())
     .run();
   const created = await env.DB.prepare(
-    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code
+    `SELECT id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code, content_json, updated_at
      FROM minna_sessions WHERE owner_id = ?`,
   )
     .bind(ownerId)
@@ -216,6 +228,15 @@ async function configureRoom(sessionId: string, targetCount: number) {
   if (session.phase === "lobby" && targetCount < enrolled) {
     throw new RoomTargetTooSmallError();
   }
+}
+
+async function configureContent(sessionId: string, content: RoomContent) {
+  const result = await env.DB.prepare(
+    `UPDATE minna_sessions SET content_json = ?, updated_at = ? WHERE id = ? AND phase = 'lobby'`,
+  )
+    .bind(JSON.stringify(content), Date.now(), sessionId)
+    .run();
+  if (result.meta.changes === 0) throw new RoomContentLockedError();
 }
 
 async function joinParticipant(session: SessionRow, clientId: string) {
@@ -446,8 +467,10 @@ async function hostAction(sessionId: string, action: string) {
     .run();
 }
 
-async function currentState(sessionId: string, includeFireworks = false): Promise<PublicState> {
+async function currentState(sessionId: string, hostView = false): Promise<PublicState> {
   const session = await readSession(sessionId);
+  const content = roomContentFromJson(session.content_json);
+  const visibleContent = hostView ? content : roomContentForAudience(content, session.phase);
   const active = await participantRows(session.id, session.generation, true);
   const finale = await finaleProgress(session.id, session.generation);
   const answerCounts: Record<string, number> = {};
@@ -467,6 +490,7 @@ async function currentState(sessionId: string, includeFireworks = false): Promis
   return {
     phase: session.phase,
     generation: session.generation,
+    updatedAt: session.updated_at,
     targetCount: session.target_count,
     participantCount: active.length,
     participants: active.map((participant) => ({
@@ -474,9 +498,11 @@ async function currentState(sessionId: string, includeFireworks = false): Promis
       color: participant.color,
       answeredCurrentQuestion: Boolean(answerForPhase(participant, session.phase)),
     })),
-    fireworks: includeFireworks ? await fireworkRows(session.id, session.generation) : [],
+    fireworks: hostView ? await fireworkRows(session.id, session.generation) : [],
     answerCounts,
     collectiveLine: session.collective_line,
+    questions: visibleContent.questions,
+    finalePunchline: visibleContent.finalePunchline,
     smile: smileProgress(session.target_count, active.length),
     finale: {
       denominator: finale.denominator,
@@ -608,6 +634,31 @@ function isTrustedMutation(request: Request) {
   return request.headers.get("sec-fetch-site") !== "cross-site";
 }
 
+async function readJsonPayload(request: Request): Promise<Record<string, unknown>> {
+  const declaredLength = Number.parseInt(request.headers.get("content-length") ?? "0", 10);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_JSON_BODY_BYTES) {
+    throw new RequestTooLargeError();
+  }
+  if (!request.body) throw new SyntaxError("JSON body is empty");
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let receivedBytes = 0;
+  let body = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    receivedBytes += value.byteLength;
+    if (receivedBytes > MAX_JSON_BODY_BYTES) {
+      await reader.cancel();
+      throw new RequestTooLargeError();
+    }
+    body += decoder.decode(value, { stream: true });
+  }
+  body += decoder.decode();
+  return JSON.parse(body) as Record<string, unknown>;
+}
+
 function randomBetween(min: number, max: number) {
   const values = new Uint32Array(1);
   crypto.getRandomValues(values);
@@ -623,9 +674,12 @@ function error(message: string, status: number) {
 }
 
 function routeError(cause: unknown) {
+  if (cause instanceof RequestTooLargeError) return error("request-too-large", 413);
+  if (cause instanceof SyntaxError) return error("invalid-json", 400);
   if (cause instanceof HostSignInRequiredError) return error("host-sign-in-required", 401);
   if (cause instanceof RoomNotConfiguredError) return error("room-not-configured", 409);
   if (cause instanceof RoomTargetTooSmallError) return error("target-below-participants", 409);
+  if (cause instanceof RoomContentLockedError) return error("room-content-locked", 409);
   if (cause instanceof RoomFullError) return error("room-full", 429);
   if (cause instanceof ParticipantRequiredError) return error("participant-required", 403);
   const message = cause instanceof Error ? cause.message : "unexpected-error";
@@ -634,7 +688,9 @@ function routeError(cause: unknown) {
 }
 
 class HostSignInRequiredError extends Error {}
+class RequestTooLargeError extends Error {}
 class RoomNotConfiguredError extends Error {}
 class RoomTargetTooSmallError extends Error {}
+class RoomContentLockedError extends Error {}
 class RoomFullError extends Error {}
 class ParticipantRequiredError extends Error {}
