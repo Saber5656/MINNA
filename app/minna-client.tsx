@@ -2,6 +2,7 @@
 
 import {
   ArrowRight,
+  Check,
   PartyPopper,
   QrCode,
   RotateCcw,
@@ -18,11 +19,13 @@ import { ParticleStage, type Arrival } from "./particle-stage";
 const EMPTY_STATE: PublicState = {
   phase: "lobby",
   generation: 1,
+  targetCount: 0,
   participantCount: 0,
   participants: [],
   fireworks: [],
   answerCounts: {},
   collectiveLine: null,
+  smile: { minimumDotCount: 32, dotCount: 32, filledDotCount: 0, complete: false },
   finale: { denominator: 0, completed: 0, progress: 0, special: false, deadlineAt: null },
 };
 
@@ -38,6 +41,9 @@ function HostExperience() {
   const [connected, setConnected] = useState(true);
   const [controlLocked, setControlLocked] = useState(false);
   const [activeFireworks, setActiveFireworks] = useState<PublicFirework[]>([]);
+  const [targetDraft, setTargetDraft] = useState("68");
+  const [configuring, setConfiguring] = useState(false);
+  const [configError, setConfigError] = useState("");
   const previousRef = useRef<PublicState | null>(null);
   const roomCodeRef = useRef("");
   const seenFireworksRef = useRef(new Set<number>());
@@ -57,6 +63,9 @@ function HostExperience() {
           color: participant.color,
         });
       }
+    }
+    if (previous?.targetCount !== next.targetCount && next.targetCount > 0) {
+      setTargetDraft(String(next.targetCount));
     }
     previousRef.current = next;
     setState(next);
@@ -121,6 +130,27 @@ function HostExperience() {
     }
   };
 
+  const configureRoom = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const targetCount = Number.parseInt(targetDraft, 10);
+    if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 500) return;
+    setConfiguring(true);
+    setConfigError("");
+    try {
+      acceptHostState(await postHost("configure-room", { targetCount }));
+    } catch (error) {
+      if (error instanceof HostAuthError && error.status === 401) {
+        location.href = `/signin-with-chatgpt?return_to=${encodeURIComponent("/host")}`;
+      } else if (error instanceof HostAuthError && error.code === "target-below-participants") {
+        setConfigError("参加済み人数以上を入力してください");
+      } else {
+        setConnected(false);
+      }
+    } finally {
+      setConfiguring(false);
+    }
+  };
+
   const speak = () => {
     if (!state.collectiveLine) return;
     speechSynthesis.cancel();
@@ -142,15 +172,17 @@ function HostExperience() {
       <header className="host-header">
         <div className="wordmark">MINNA<span>.exe</span></div>
         <div className="connection-readout">
-          <Users size={18} /><strong>{state.participantCount}</strong><span>CONNECTED</span>
+          <Users size={18} /><strong>{state.participantCount}</strong><span>/ {state.targetCount || "-"} JOINED</span>
         </div>
       </header>
       <main className="host-main">
         <ParticleStage
           participants={state.participants}
           arrival={arrival}
+          dotCount={state.smile.dotCount}
+          filledDotCount={state.smile.filledDotCount}
           faceCenter={state.phase === "lobby" ? 0.56 : 0.7}
-          celebrate={state.phase === "complete" && state.finale.special}
+          celebrate={state.smile.complete || (state.phase === "complete" && state.finale.special)}
         />
         <div className="fireworks-layer" aria-hidden="true">
           {activeFireworks.map((firework) => <FireworkBurst key={firework.id} firework={firework} />)}
@@ -169,11 +201,24 @@ function HostExperience() {
 
         {state.phase === "lobby" && (
           <aside className="join-panel">
-            <div className="join-panel-title"><QrCode size={18} /><span>SCAN TO JOIN</span></div>
-            {/* eslint-disable-next-line @next/next/no-img-element -- generated data URL */}
-            {qr ? <img className="join-qr" src={qr} alt="観客参加用QRコード" /> : <div className="qr-placeholder" />}
-            <div className="join-url">{joinUrl}</div>
-            <div className="join-steps">QR <span>→</span> 1 TAP <span>→</span> YOUR PARTICLE</div>
+            <form className="room-size-form" onSubmit={configureRoom}>
+              <label htmlFor="room-size"><Users size={17} />会場人数</label>
+              <div>
+                <input id="room-size" type="number" min={Math.max(1, state.participantCount)} max="500" inputMode="numeric" value={targetDraft} onChange={(event) => setTargetDraft(event.target.value)} />
+                <button type="submit" disabled={configuring} aria-label="会場人数を設定" title="会場人数を設定"><Check /></button>
+              </div>
+              <p>{state.smile.dotCount} DOT SMILE</p>
+              {configError && <p className="room-size-error" role="alert">{configError}</p>}
+            </form>
+            {state.targetCount > 0 && (
+              <>
+                <div className="join-panel-title"><QrCode size={18} /><span>SCAN TO JOIN</span></div>
+                {/* eslint-disable-next-line @next/next/no-img-element -- generated data URL */}
+                {qr ? <img className="join-qr" src={qr} alt="観客参加用QRコード" /> : <div className="qr-placeholder" />}
+                <div className="join-url">{joinUrl}</div>
+                <div className="join-steps">QR <span>→</span> 1 TAP <span>→</span> YOUR PARTICLE</div>
+              </>
+            )}
           </aside>
         )}
 
@@ -189,7 +234,7 @@ function HostExperience() {
         <div className="control-status"><span className={`status-dot ${connected && !controlLocked ? "" : "offline"}`} />{controlLocked ? "CONTROL LOCKED" : connected ? "LIVE" : "RECONNECTING"}</div>
         <div className="control-actions">
           <IconButton label="セリフを再生" disabled={!state.collectiveLine} onClick={speak}><Volume2 /></IconButton>
-          <IconButton label="次へ進む" accent disabled={state.phase === "finale" || state.phase === "complete"} onClick={() => void control("next")}><ArrowRight /></IconButton>
+          <IconButton label="次へ進む" accent disabled={state.targetCount === 0 || state.phase === "finale" || state.phase === "complete"} onClick={() => void control("next")}><ArrowRight /></IconButton>
           <IconButton label="フィナーレを発火" hot disabled={state.phase !== "finale"} onClick={() => void control("fire")}><Zap /></IconButton>
           <IconButton label="最初からやり直す" onClick={() => void control("reset")}><RotateCcw /></IconButton>
         </div>
@@ -232,7 +277,7 @@ function AudienceExperience() {
     };
     const poll = async () => {
       try {
-        const response = await fetch("/api/session", { cache: "no-store" });
+        const response = await fetch(`/api/session?room=${encodeURIComponent(roomCode)}`, { cache: "no-store" });
         if (!response.ok) throw new Error("sync failed");
         if (active) acceptState((await response.json()) as PublicState);
       } catch {
@@ -319,7 +364,7 @@ function AudienceExperience() {
         <div className="personal-mark"><span className="personal-dot" />YOUR PARTICLE</div>
       </header>
       <main className="audience-main">
-        {state.phase === "lobby" && <AudienceMessage eyebrow="YOU ARE IN" title={<>あなたの粒を<br />受け取りました。</>} text="投影画面の合図を待ってください。" orb />}
+        {state.phase === "lobby" && <AudienceMessage eyebrow={state.smile.complete ? "SMILE COMPLETE" : "YOU ARE IN"} title={state.smile.complete ? <>全員集合。<br />ニッコリ完成。</> : <>あなたの粒を<br />受け取りました。</>} text={`${state.participantCount} / ${state.targetCount} JOINED`} orb />}
         {question && !alreadyAnswered && (
           <section className="audience-state question-state">
             <p className="audience-eyebrow">{question.eyebrow}</p>
@@ -414,7 +459,9 @@ function IconButton({ label, children, accent, hot, ...props }: React.ButtonHTML
 
 function hostCopy(state: PublicState) {
   const question = questionForPhase(state.phase);
-  if (state.phase === "lobby") return { marker: "WAITING ROOM", title: <>会場を、<br />ひとりにする。</>, subtitle: "今から皆さん全員を、ひとりのAI芸人にします。" };
+  if (state.targetCount === 0) return { marker: "ROOM SETUP", title: <>会場人数を、<br />入力。</>, subtitle: "1〜500 PEOPLE" };
+  if (state.phase === "lobby" && state.smile.complete) return { marker: "EVERYONE IS HERE", title: <>ニッコリ、<br />完成。</>, subtitle: `${state.participantCount} / ${state.targetCount} JOINED` };
+  if (state.phase === "lobby") return { marker: "WAITING ROOM", title: <>会場を、<br />ひとりにする。</>, subtitle: `あと ${Math.max(0, state.targetCount - state.participantCount)} 人で完成` };
   if (question) return { marker: question.eyebrow, title: question.prompt, subtitle: "READY" };
   if (state.phase === "reveal") return { marker: "MINNA.exe IS ALIVE", title: state.collectiveLine ?? "MINNA.exe", subtitle: "WE ARE ONE ROOM" };
   if (state.phase === "finale") return { marker: "FINAL SYNC", title: "3秒、みんなで長押し。", subtitle: "顔にエネルギーを送ってください。" };
@@ -422,10 +469,12 @@ function hostCopy(state: PublicState) {
 }
 
 function getClientId() {
-  const existing = sessionStorage.getItem("minna-sites-client-id");
+  const roomCode = getRoomCode();
+  const storageKey = roomCode ? `minna-sites-client-id:${roomCode}` : "minna-sites-client-id";
+  const existing = sessionStorage.getItem(storageKey);
   if (existing) return existing;
   const created = crypto.randomUUID();
-  sessionStorage.setItem("minna-sites-client-id", created);
+  sessionStorage.setItem(storageKey, created);
   return created;
 }
 
@@ -468,18 +517,21 @@ async function postAudience(
   return response.json() as Promise<PublicState>;
 }
 
-async function postHost(action: string) {
+async function postHost(action: string, extra: Record<string, string | number> = {}) {
   const response = await fetch("/api/session", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, ...extra }),
   });
-  if (!response.ok) throw new HostAuthError(response.status);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "request-failed" })) as { error?: string };
+    throw new HostAuthError(response.status, payload.error ?? "request-failed");
+  }
   return response.json() as Promise<PublicState & { joinCode?: string }>;
 }
 
 class HostAuthError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code: string) {
     super(`Host request failed: ${status}`);
   }
 }

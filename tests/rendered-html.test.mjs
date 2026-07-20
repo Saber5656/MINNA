@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  FACE_TARGET_COUNT,
+  MIN_SMILE_DOT_COUNT,
   QUESTIONS,
   buildCollectiveLine,
   makeSmileTargets,
   questionForPhase,
-  smileTargetIndex,
+  smileProgress,
 } from "../lib/minna.ts";
 
 const root = new URL("../", import.meta.url);
@@ -33,10 +33,12 @@ test("ships the audience and host product instead of the starter", async () => {
 });
 
 test("declares the shared database and migration", async () => {
-  const [hosting, migration, answersMigration, route] = await Promise.all([
+  const [hosting, migration, answersMigration, sessionsMigration, constraintsMigration, route] = await Promise.all([
     readFile(new URL(".openai/hosting.json", root), "utf8"),
     readFile(new URL("drizzle/0000_curvy_sunfire.sql", root), "utf8"),
     readFile(new URL("drizzle/0003_ancient_jimmy_woo.sql", root), "utf8"),
+    readFile(new URL("drizzle/0005_first_maginty.sql", root), "utf8"),
+    readFile(new URL("drizzle/0006_safe_speedball.sql", root), "utf8"),
     readFile(new URL("app/api/session/route.ts", root), "utf8"),
   ]);
   assert.equal(JSON.parse(hosting).d1, "DB");
@@ -45,11 +47,26 @@ test("declares the shared database and migration", async () => {
   assert.match(answersMigration, /ADD `answer_wish`/);
   assert.match(answersMigration, /ADD `answer_role`/);
   assert.match(answersMigration, /ADD `answer_energy`/);
+  assert.match(sessionsMigration, /ADD `session_id`/);
+  assert.match(sessionsMigration, /ADD `target_count`/);
+  assert.match(sessionsMigration, /minna_sessions_owner_idx/);
+  assert.match(constraintsMigration, /PRIMARY KEY\(`session_id`, `secret_id`\)/);
+  assert.match(constraintsMigration, /minna_sessions_target_count_check/);
+  assert.match(constraintsMigration, /minna_sessions_room_code_idx/);
   assert.match(route, /special/);
   assert.match(route, /HOLD_MS = 3_000/);
   assert.match(route, /FINALE_MS = 20_000/);
-  assert.equal(route.match(/crypto\.randomUUID\(\)/g)?.length, 2);
+  assert.ok((route.match(/crypto\.randomUUID\(\)/g)?.length ?? 0) >= 2);
   assert.ok(route.includes('!/^[0-9a-f]{64}$/.test(value)'));
+  assert.doesNotMatch(route, /generation = \?\) < 500/);
+  assert.match(route, /target-below-participants/);
+  assert.match(route, /special = 0, room_code = \?, updated_at = \?/);
+  const resetBlock = route.slice(
+    route.indexOf('if (action === "reset")'),
+    route.indexOf('if (action === "fire"', route.indexOf('if (action === "reset")')),
+  );
+  assert.match(resetBlock, /DELETE FROM minna_participants WHERE session_id = \?[^]*?bind\(session\.id\)/);
+  assert.match(resetBlock, /DELETE FROM minna_fireworks WHERE session_id = \?[^]*?bind\(session\.id\)/);
 });
 
 test("runs five audience questions through the collective reveal", () => {
@@ -73,13 +90,28 @@ test("runs five audience questions through the collective reveal", () => {
   assert.match(line, /限界突破/);
 });
 
-test("fills every smile slot exactly once at 68 participants", () => {
-  const targets = makeSmileTargets(1_000, 700, 0.5);
-  assert.equal(FACE_TARGET_COUNT, 68);
-  assert.equal(targets.length, FACE_TARGET_COUNT);
-  assert.equal(new Set(targets.map(({ x, y }) => `${x.toFixed(4)}:${y.toFixed(4)}`)).size, 68);
+test("keeps a recognizable 32-dot minimum and scales with room size", () => {
+  assert.equal(MIN_SMILE_DOT_COUNT, 32);
+  assert.equal(makeSmileTargets(1_000, 700, 0.5, 8).length, 32);
+  assert.equal(makeSmileTargets(1_000, 700, 0.5, 68).length, 68);
+  assert.equal(makeSmileTargets(1_000, 700, 0.5, 240).length, 240);
 
-  const occupied = Array.from({ length: 68 }, (_, index) => smileTargetIndex(index, 68));
-  assert.equal(new Set(occupied).size, 68);
-  assert.deepEqual(occupied, Array.from({ length: 68 }, (_, index) => index));
+  assert.deepEqual(smileProgress(12, 6), {
+    minimumDotCount: 32,
+    dotCount: 32,
+    filledDotCount: 16,
+    complete: false,
+  });
+  assert.deepEqual(smileProgress(12, 12), {
+    minimumDotCount: 32,
+    dotCount: 32,
+    filledDotCount: 32,
+    complete: true,
+  });
+  assert.deepEqual(smileProgress(80, 40), {
+    minimumDotCount: 32,
+    dotCount: 80,
+    filledDotCount: 40,
+    complete: false,
+  });
 });

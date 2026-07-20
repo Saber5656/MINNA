@@ -79,11 +79,18 @@ export interface PublicFirework {
 export interface PublicState {
   phase: Phase;
   generation: number;
+  targetCount: number;
   participantCount: number;
   participants: PublicParticipant[];
   fireworks: PublicFirework[];
   answerCounts: Record<string, number>;
   collectiveLine: string | null;
+  smile: {
+    minimumDotCount: number;
+    dotCount: number;
+    filledDotCount: number;
+    complete: boolean;
+  };
   finale: {
     denominator: number;
     completed: number;
@@ -190,24 +197,39 @@ export function buildCollectiveLine(
   return `私はMINNA.exe。${percent}%がAIにありがとうと言う、礼儀正しい人格です。${callback}${wishLine}、${roleLine}、${energyLine}`;
 }
 
-export const FACE_TARGET_COUNT = 68;
+export const MIN_SMILE_DOT_COUNT = 32;
 
-export function makeSmileTargets(width: number, height: number, centerRatio: number) {
+export function makeSmileTargets(
+  width: number,
+  height: number,
+  centerRatio: number,
+  requestedCount = MIN_SMILE_DOT_COUNT,
+) {
   const points: Array<{ x: number; y: number }> = [];
+  const count = Math.max(MIN_SMILE_DOT_COUNT, Math.floor(requestedCount));
+  const eyeCount = Math.max(4, Math.floor(count * 0.12));
+  const mouthCount = Math.max(8, Math.floor(count * 0.24));
+  const outlineCount = count - eyeCount * 2 - mouthCount;
   const centerX = width * centerRatio;
   const centerY = height * 0.48;
   const radius = Math.min(width, height) * 0.32;
-  addArc(points, centerX, centerY, radius, 0, Math.PI * 2, 36, false);
-  addArc(points, centerX - radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, 8, false);
-  addArc(points, centerX + radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, 8, false);
-  addArc(points, centerX, centerY + radius * 0.08, radius * 0.48, Math.PI * 0.15, Math.PI * 0.85, 16, true);
+  addArc(points, centerX, centerY, radius, 0, Math.PI * 2, outlineCount, false);
+  addArc(points, centerX - radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, eyeCount, false);
+  addArc(points, centerX + radius * 0.35, centerY - radius * 0.18, radius * 0.1, 0, Math.PI * 2, eyeCount, false);
+  addArc(points, centerX, centerY + radius * 0.08, radius * 0.48, Math.PI * 0.15, Math.PI * 0.85, mouthCount, true);
   return points;
 }
 
-export function smileTargetIndex(participantIndex: number, participantCount: number) {
-  if (participantCount <= 0) return 0;
-  if (participantCount >= FACE_TARGET_COUNT) return participantIndex % FACE_TARGET_COUNT;
-  return Math.floor((participantIndex * FACE_TARGET_COUNT) / participantCount);
+export function smileProgress(targetCount: number, participantCount: number) {
+  const safeTarget = Math.max(0, Math.min(500, Math.floor(targetCount)));
+  const dotCount = Math.max(MIN_SMILE_DOT_COUNT, safeTarget);
+  const progress = safeTarget === 0 ? 0 : Math.min(1, participantCount / safeTarget);
+  return {
+    minimumDotCount: MIN_SMILE_DOT_COUNT,
+    dotCount,
+    filledDotCount: Math.round(dotCount * progress),
+    complete: safeTarget > 0 && participantCount >= safeTarget,
+  };
 }
 
 const QUESTION_PHASES = [

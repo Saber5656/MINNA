@@ -45,6 +45,15 @@ button { color: inherit; }
 .answer-progress > div { width: min(360px, 100%); height: 5px; background: #1d2326; margin-top: 10px; }
 .answer-progress i { display: block; height: 100%; background: var(--cyan); transition: width .25s ease; }
 .join-panel { position: absolute; z-index: 2; right: 5%; top: 50%; width: 260px; transform: translateY(-50%); }
+.room-size-form { margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.room-size-form label { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 900; }
+.room-size-form > div { display: grid; grid-template-columns: 1fr 46px; gap: 8px; }
+.room-size-form input { width: 100%; min-width: 0; height: 46px; padding: 0 13px; border: 1px solid #4a5459; border-radius: 6px; background: #111517; color: var(--paper); font-size: 22px; font-weight: 900; }
+.room-size-form button { width: 46px; height: 46px; display: grid; place-items: center; border: 0; border-radius: 6px; background: var(--yellow); color: var(--ink); cursor: pointer; }
+.room-size-form button svg { width: 21px; height: 21px; }
+.room-size-form button:disabled { opacity: .5; cursor: not-allowed; }
+.room-size-form p { margin: 8px 0 0; color: var(--cyan); font-size: 10px; font-weight: 900; }
+.room-size-form .room-size-error { color: #ff6b35; font-size: 11px; }
 .join-panel-title { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; font-size: 12px; font-weight: 900; }
 .join-qr, .qr-placeholder { display: block; width: 224px; aspect-ratio: 1; background: var(--paper); border: 8px solid var(--paper); }
 .join-url { margin-top: 10px; max-width: 240px; overflow-wrap: anywhere; color: #c6cbd0; font-size: 12px; }

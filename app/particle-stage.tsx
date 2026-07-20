@@ -3,7 +3,6 @@
 import { useEffect, useRef } from "react";
 import {
   makeSmileTargets,
-  smileTargetIndex,
   type PublicParticipant,
 } from "../lib/minna";
 
@@ -23,22 +22,33 @@ interface FlyingParticle {
 export function ParticleStage({
   participants,
   arrival,
+  dotCount,
+  filledDotCount,
   faceCenter = 0.7,
   celebrate = false,
 }: {
   participants: PublicParticipant[];
   arrival: Arrival | null;
+  dotCount: number;
+  filledDotCount: number;
   faceCenter?: number;
   celebrate?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const participantsRef = useRef(participants);
+  const dotCountRef = useRef(dotCount);
+  const filledDotCountRef = useRef(filledDotCount);
   const flyingRef = useRef<FlyingParticle[]>([]);
   const celebrateRef = useRef(false);
 
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
+
+  useEffect(() => {
+    dotCountRef.current = dotCount;
+    filledDotCountRef.current = filledDotCount;
+  }, [dotCount, filledDotCount]);
 
   useEffect(() => {
     if (!arrival) return;
@@ -68,32 +78,43 @@ export function ParticleStage({
     const draw = (time: number) => {
       const width = canvas.width;
       const height = canvas.height;
-      const targets = makeSmileTargets(width, height, faceCenter);
+      const targets = makeSmileTargets(width, height, faceCenter, dotCountRef.current);
+      const dotRadius = Math.max(
+        2,
+        Math.min(width / 260, (Math.min(width, height) * 0.95) / Math.max(80, targets.length)),
+      );
       context.clearRect(0, 0, width, height);
       context.fillStyle = "rgba(245,241,232,.08)";
       for (const target of targets) {
         context.beginPath();
-        context.arc(target.x, target.y, Math.max(2, width / 700), 0, Math.PI * 2);
+        context.arc(target.x, target.y, Math.max(1.5, dotRadius * 0.42), 0, Math.PI * 2);
         context.fill();
       }
 
       const current = participantsRef.current;
       const targetFor = (id: string) => {
         const index = current.findIndex((item) => item.id === id);
-        return targets[smileTargetIndex(Math.max(0, index), current.length)] ?? {
+        const visibleTargets = Math.max(1, filledDotCountRef.current);
+        const targetIndex = current.length === 0
+          ? 0
+          : Math.floor((Math.max(0, index) * visibleTargets) / current.length);
+        return targets[Math.min(targets.length - 1, targetIndex)] ?? {
           x: width * faceCenter,
           y: height * 0.48,
         };
       };
-      current.forEach((participant) => {
-        const target = targetFor(participant.id);
+      for (let index = 0; index < filledDotCountRef.current; index += 1) {
+        const participant = current[index % Math.max(1, current.length)];
+        if (!participant) break;
+        const target = targets[index];
+        if (!target) break;
         context.shadowColor = participant.color;
         context.shadowBlur = celebrateRef.current ? 28 : 14;
         context.fillStyle = participant.color;
         context.beginPath();
-        context.arc(target.x, target.y, Math.max(6, width / 260), 0, Math.PI * 2);
+        context.arc(target.x, target.y, dotRadius, 0, Math.PI * 2);
         context.fill();
-      });
+      }
       context.shadowBlur = 0;
 
       flyingRef.current = flyingRef.current.filter((particle, index) => {
@@ -121,6 +142,19 @@ export function ParticleStage({
       });
 
       if (celebrateRef.current) {
+        const sparkleStep = Math.max(1, Math.floor(targets.length / 24));
+        for (let index = 0; index < targets.length; index += sparkleStep) {
+          const target = targets[index];
+          const participant = current[index % Math.max(1, current.length)];
+          if (!target || !participant) continue;
+          const pulse = 0.45 + Math.sin(time / 180 + index * 1.9) * 0.35;
+          const size = Math.max(4, width / 360) * Math.max(0.3, pulse);
+          context.globalAlpha = Math.max(0.15, pulse);
+          context.fillStyle = "#ffffff";
+          context.fillRect(target.x - size * 2, target.y - size / 2, size * 4, size);
+          context.fillRect(target.x - size / 2, target.y - size * 2, size, size * 4);
+        }
+        context.globalAlpha = 1;
         current.forEach((participant, index) => {
           const angle = time / 700 + index * 1.7;
           context.fillStyle = participant.color;
