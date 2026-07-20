@@ -22,6 +22,7 @@ export const minnaSessions = sqliteTable(
     deadlineAt: integer("deadline_at"),
     special: integer("special", { mode: "boolean" }).notNull().default(false),
     roomCode: text("room_code"),
+    contentJson: text("content_json"),
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [
