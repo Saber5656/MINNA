@@ -51,7 +51,7 @@ export const QUESTIONS = [
 ] as const;
 
 export type QuestionId = (typeof QUESTIONS)[number]["id"];
-export type AnswerOption = (typeof QUESTIONS)[number]["options"][number]["id"];
+export type AnswerOption = string;
 export interface PublicQuestion {
   id: QuestionId;
   eyebrow: string;
@@ -75,6 +75,18 @@ export type Phase =
   | "reveal"
   | "finale"
   | "complete";
+
+const PHASES: readonly Phase[] = [
+  "lobby",
+  "question-1",
+  "question-2",
+  "question-3",
+  "question-4",
+  "question-5",
+  "reveal",
+  "finale",
+  "complete",
+];
 
 export interface PublicParticipant {
   id: string;
@@ -121,6 +133,18 @@ export function questionForPhase(phase: Phase, questions: readonly PublicQuestio
   return index < 0 ? null : questions[index] ?? null;
 }
 
+export function previousPresentationPhase(phase: Phase): Phase | null {
+  const previous: Partial<Record<Phase, Phase>> = {
+    "question-2": "question-1",
+    "question-3": "question-2",
+    "question-4": "question-3",
+    "question-5": "question-4",
+    reveal: "question-5",
+    finale: "reveal",
+  };
+  return previous[phase] ?? null;
+}
+
 export function defaultRoomContent(): RoomContent {
   return {
     questions: QUESTIONS.map((question) => ({
@@ -156,15 +180,19 @@ export function roomContentFromUnknown(value: unknown): RoomContent | null {
       question.id !== expected.id ||
       !isTrimmedText(question.prompt, 1, 80) ||
       !Array.isArray(question.options) ||
-      question.options.length !== expected.options.length
+      question.options.length < 2 ||
+      question.options.length > 4
     ) {
       return null;
     }
     const options: Array<{ id: AnswerOption; label: string }> = [];
-    for (const [optionIndex, expectedOption] of expected.options.entries()) {
-      const option = question.options[optionIndex] as Record<string, unknown> | undefined;
-      if (!option || option.id !== expectedOption.id || !isTrimmedText(option.label, 1, 24)) return null;
-      options.push({ id: expectedOption.id, label: option.label.trim() });
+    const optionIds = new Set<string>();
+    for (const candidateOption of question.options) {
+      const option = candidateOption as Record<string, unknown> | undefined;
+      if (!option || !isAnswerOption(option.id) || !isTrimmedText(option.label, 1, 24)) return null;
+      if (optionIds.has(option.id)) return null;
+      optionIds.add(option.id);
+      options.push({ id: option.id, label: option.label.trim() });
     }
     questions.push({
       id: expected.id,
@@ -192,10 +220,22 @@ export function isQuestionId(value: unknown): value is QuestionId {
   return QUESTIONS.some((question) => question.id === value);
 }
 
+export function isPhase(value: unknown): value is Phase {
+  return typeof value === "string" && PHASES.some((phase) => phase === value);
+}
+
 export function isAnswerOption(value: unknown): value is AnswerOption {
-  return QUESTIONS.some((question) =>
-    question.options.some((option) => option.id === value),
-  );
+  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(value);
+}
+
+export function isRoomAnswerOption(
+  content: RoomContent,
+  phase: Phase,
+  questionId: QuestionId,
+  optionId: AnswerOption,
+) {
+  const question = questionForPhase(phase, content.questions);
+  return question?.id === questionId && question.options.some((option) => option.id === optionId);
 }
 
 export function isClientId(value: unknown): value is string {
@@ -238,6 +278,7 @@ export function buildCollectiveLine(
     answerRole: string | null;
     answerEnergy: string | null;
   }>,
+  questions: readonly PublicQuestion[] = QUESTIONS,
 ) {
   const thanks = participants.map((item) => item.answerThanks).filter(Boolean);
   const states = participants.map((item) => item.answerState).filter(Boolean);
@@ -246,6 +287,13 @@ export function buildCollectiveLine(
   const energies = participants.map((item) => item.answerEnergy).filter(Boolean);
   if ([thanks, states, wishes, roles, energies].some((answers) => answers.length < 5)) {
     return "私はMINNA.exe。少人数でも、全員分の色でできています。集まってくれて、ありがとう。";
+  }
+  if (!hasDefaultQuestionContent(questions)) {
+    const majorityLabels = [thanks, states, wishes, roles, energies].map((answers, index) => {
+      const answer = majority(answers);
+      return questions[index]?.options.find((option) => option.id === answer)?.label ?? "未回答";
+    });
+    return `私はMINNA.exe。会場の多数派は${majorityLabels.map((label) => `「${label}」`).join("、")}。この5つの答えを混ぜて、いまここで生まれました。`;
   }
   const percent = Math.round(
     (thanks.filter((answer) => answer === "yes").length / thanks.length) * 100,
@@ -322,6 +370,19 @@ const QUESTION_PHASES = [
   "question-4",
   "question-5",
 ] as const;
+
+function hasDefaultQuestionContent(questions: readonly PublicQuestion[]) {
+  return QUESTIONS.every((question, index) => {
+    const actual = questions[index];
+    return actual?.id === question.id &&
+      actual.prompt === question.prompt &&
+      actual.options.length === question.options.length &&
+      question.options.every((option, optionIndex) => {
+        const actualOption = actual.options[optionIndex];
+        return actualOption?.id === option.id && actualOption.label === option.label;
+      });
+  });
+}
 
 function majority(answers: string[]) {
   const counts = new Map<string, number>();

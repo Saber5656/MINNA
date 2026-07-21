@@ -6,7 +6,9 @@ import {
   QUESTIONS,
   buildCollectiveLine,
   defaultRoomContent,
+  isRoomAnswerOption,
   makeSmileTargets,
+  previousPresentationPhase,
   questionForPhase,
   roomContentFromJson,
   roomContentForAudience,
@@ -28,6 +30,10 @@ test("ships the audience and host product instead of the starter", async () => {
   assert.match(client, /YOUR PARTICLE/);
   assert.match(client, /hold-start/);
   assert.match(client, /configure-content/);
+  assert.match(client, /選択肢を追加/);
+  assert.match(client, /ひとつ前に戻る/);
+  assert.match(client, /controlPendingRef\.current/);
+  assert.match(client, /expectedPhase: state\.phase/);
   assert.match(client, /FINAL PUNCHLINE/);
   assert.match(client, /Mouse/);
   assert.match(client, /\^\[0-9a-f\]\{64\}\$/);
@@ -77,6 +83,12 @@ test("declares the shared database and migration", async () => {
   assert.match(route, /UPDATE minna_sessions SET content_json = \?, updated_at = \? WHERE id = \? AND phase = 'lobby'/);
   assert.match(route, /\.bind\(JSON\.stringify\(content\), Date\.now\(\), sessionId\)/);
   assert.match(route, /if \(result\.meta\.changes === 0\) throw new RoomContentLockedError\(\)/);
+  assert.match(route, /isRoomAnswerOption\(content, session\.phase, questionId, optionId\)/);
+  assert.match(route, /action === "back"/);
+  assert.match(route, /previousPresentationPhase\(session\.phase\)/);
+  assert.match(route, /expectedPhase !== session\.phase/);
+  assert.match(route, /WHERE id = \? AND phase = \?/);
+  assert.match(route, /SELECT 1 FROM minna_sessions WHERE id = \? AND phase = \? AND updated_at = \?/);
   assert.match(route, /special = 0, room_code = \?, updated_at = \?/);
   const resetBlock = route.slice(
     route.indexOf('if (action === "reset")'),
@@ -122,6 +134,55 @@ test("validates host-authored questions and finale punchline", () => {
   assert.equal(hidden.questions[2]?.prompt, defaults.questions[2]?.prompt);
   assert.equal(hidden.finalePunchline, "");
   assert.equal(roomContentForAudience(parsed, "complete").finalePunchline, parsed.finalePunchline);
+
+  const fourOptions = {
+    ...candidate,
+    questions: candidate.questions.map((question, index) => index === 0
+      ? {
+          ...question,
+          options: [
+            ...question.options,
+            { id: "custom-ai-thanks-three", label: "Copilot" },
+            { id: "custom-ai-thanks-four", label: "Gemini" },
+          ],
+        }
+      : question),
+  };
+  const parsedFourOptions = roomContentFromUnknown(fourOptions);
+  assert.equal(parsedFourOptions?.questions[0]?.options.length, 4);
+  assert.equal(parsedFourOptions?.questions[0]?.options[2]?.label, "Copilot");
+
+  const twoOptions = {
+    ...candidate,
+    questions: candidate.questions.map((question, index) => index === 1
+      ? { ...question, options: question.options.slice(0, 2) }
+      : question),
+  };
+  assert.equal(roomContentFromUnknown(twoOptions)?.questions[1]?.options.length, 2);
+  assert.equal(roomContentFromUnknown({
+    ...candidate,
+    questions: candidate.questions.map((question, index) => index === 1
+      ? { ...question, options: question.options.slice(0, 1) }
+      : question),
+  }), null);
+  assert.equal(roomContentFromUnknown({
+    ...fourOptions,
+    questions: fourOptions.questions.map((question, index) => index === 0
+      ? { ...question, options: [...question.options, { id: "custom-ai-thanks-five", label: "Claude" }] }
+      : question),
+  }), null);
+  assert.equal(roomContentFromUnknown({
+    ...candidate,
+    questions: candidate.questions.map((question, index) => index === 0
+      ? { ...question, options: [question.options[0], question.options[0]] }
+      : question),
+  }), null);
+  assert.equal(roomContentFromUnknown({
+    ...candidate,
+    questions: candidate.questions.map((question, index) => index === 0
+      ? { ...question, options: [{ id: "NOT SAFE", label: "A" }, question.options[1]] }
+      : question),
+  }), null);
 });
 
 test("runs five audience questions through the collective reveal", () => {
@@ -143,6 +204,60 @@ test("runs five audience questions through the collective reveal", () => {
   assert.match(line, /目的は一体感/);
   assert.match(line, /ツッコミ/);
   assert.match(line, /限界突破/);
+});
+
+test("supports custom option majorities and reversible presentation phases", () => {
+  const content = defaultRoomContent();
+  content.questions[0] = {
+    ...content.questions[0],
+    options: [...content.questions[0].options, { id: "custom-ai-thanks-four", label: "Copilot" }],
+  };
+  const line = buildCollectiveLine(
+    Array.from({ length: 5 }, () => ({
+      answerThanks: "custom-ai-thanks-four",
+      answerState: "awake",
+      answerWish: "connect",
+      answerRole: "tsukkomi",
+      answerEnergy: "maximum",
+    })),
+    content.questions,
+  );
+  assert.match(line, /「Copilot」/);
+  assert.match(line, /「覚醒」/);
+
+  const roomA = { ...content, questions: content.questions.map((question) => ({ ...question })) };
+  const roomB = defaultRoomContent();
+  assert.equal(isRoomAnswerOption(roomA, "question-1", "ai-thanks", "custom-ai-thanks-four"), true);
+  assert.equal(isRoomAnswerOption(roomB, "question-1", "ai-thanks", "custom-ai-thanks-four"), false);
+  assert.equal(isRoomAnswerOption(roomA, "question-2", "ai-thanks", "custom-ai-thanks-four"), false);
+
+  const relabeled = defaultRoomContent();
+  relabeled.questions[0] = {
+    ...relabeled.questions[0],
+    prompt: "いちばん好きな動物は？",
+    options: relabeled.questions[0].options.map((option, index) => ({
+      ...option,
+      label: index === 0 ? "犬" : "猫",
+    })),
+  };
+  const relabeledLine = buildCollectiveLine(
+    Array.from({ length: 5 }, () => ({
+      answerThanks: "yes",
+      answerState: "awake",
+      answerWish: "connect",
+      answerRole: "tsukkomi",
+      answerEnergy: "maximum",
+    })),
+    relabeled.questions,
+  );
+  assert.match(relabeledLine, /「犬」/);
+  assert.doesNotMatch(relabeledLine, /AIにありがとう/);
+
+  assert.equal(previousPresentationPhase("question-1"), null);
+  assert.equal(previousPresentationPhase("question-3"), "question-2");
+  assert.equal(previousPresentationPhase("reveal"), "question-5");
+  assert.equal(previousPresentationPhase("finale"), "reveal");
+  assert.equal(previousPresentationPhase("complete"), null);
 });
 
 test("keeps a recognizable 32-dot minimum and scales with room size", () => {

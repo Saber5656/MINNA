@@ -109,7 +109,19 @@ button { color: inherit; }
 .question-editor textarea, .punchline-editor textarea { min-height: 68px; resize: vertical; padding: 12px; line-height: 1.45; }
 .question-editor input { height: 42px; padding: 0 11px; }
 .question-editor textarea:focus, .question-editor input:focus, .punchline-editor textarea:focus { border-color: var(--cyan); }
-.option-edit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.option-edit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.option-edit-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 42px; align-items: end; gap: 6px; }
+.option-edit-row label { min-width: 0; }
+.option-remove { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid #465157; border-radius: 5px; background: #151a1d; color: var(--coral); cursor: pointer; }
+.option-remove:hover:not(:disabled) { border-color: var(--coral); background: #271719; }
+.option-remove:disabled { color: #656d71; opacity: .45; cursor: not-allowed; }
+.option-remove svg { width: 17px; height: 17px; }
+.option-editor-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.option-editor-actions > span { color: var(--muted); font-size: 10px; font-weight: 900; }
+.option-editor-actions button { min-height: 38px; display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; border: 1px solid #465157; border-radius: 5px; background: #151a1d; color: var(--paper); font-size: 11px; font-weight: 850; cursor: pointer; }
+.option-editor-actions button:hover:not(:disabled) { border-color: var(--cyan); }
+.option-editor-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.option-editor-actions svg { width: 16px; height: 16px; }
 .punchline-editor { padding-top: 26px; }
 .punchline-editor textarea { min-height: 96px; margin-top: 9px; font-size: 20px; font-weight: 800; }
 .content-error { color: var(--coral); font-size: 12px; font-weight: 800; }

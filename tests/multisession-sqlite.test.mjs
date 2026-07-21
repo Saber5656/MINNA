@@ -103,6 +103,86 @@ test("resetting one room leaves another room untouched", async () => {
   db.close();
 });
 
+test("rewinds only the expected phase and cleans finale state atomically", async () => {
+  const db = await migratedDatabase();
+  const insertSession = db.prepare(
+    `INSERT INTO minna_sessions
+       (id, owner_id, target_count, phase, generation, collective_line, deadline_at, special, room_code, updated_at)
+     VALUES (?, ?, 1, ?, 1, ?, ?, ?, ?, 1)`,
+  );
+  insertSession.run("room-reveal", "owner-reveal", "reveal", "line", null, 0, "e".repeat(64));
+  insertSession.run("room-finale", "owner-finale", "finale", "line", 99, 1, "f".repeat(64));
+  insertSession.run("room-complete", "owner-complete", "complete", "line", null, 1, "a1".repeat(32));
+  insertSession.run("room-stale", "owner-stale", "question-3", null, null, 0, "b2".repeat(32));
+  insertSession.run("room-stale-next", "owner-stale-next", "question-5", "line", null, 0, "c3".repeat(32));
+
+  const insertParticipant = db.prepare(
+    `INSERT INTO minna_participants
+       (session_id, secret_id, public_id, color, generation, last_seen,
+        hold_started_at, hold_completed, finale_eligible)
+     VALUES (?, ?, ?, '#00e5ff', 1, 1, 10, 1, 1)`,
+  );
+  insertParticipant.run("room-finale", "device-finale", "F");
+  insertParticipant.run("room-complete", "device-complete", "C");
+
+  const rewind = (sessionId, expectedPhase, phase, collectiveLine, now) => {
+    db.exec("BEGIN");
+    try {
+      const transition = db.prepare(
+        `UPDATE minna_sessions SET phase = ?, collective_line = ?, deadline_at = NULL,
+         special = 0, updated_at = ? WHERE id = ? AND phase = ?`,
+      ).run(phase, collectiveLine, now, sessionId, expectedPhase);
+      if (expectedPhase === "finale") {
+        db.prepare(
+          `UPDATE minna_participants SET finale_eligible = 0, hold_started_at = NULL, hold_completed = 0
+           WHERE session_id = ? AND generation = 1 AND EXISTS (
+             SELECT 1 FROM minna_sessions WHERE id = ? AND phase = ? AND updated_at = ?
+           )`,
+        ).run(sessionId, sessionId, phase, now);
+      }
+      db.exec("COMMIT");
+      return transition.changes;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
+  assert.equal(rewind("room-reveal", "reveal", "question-5", null, 10), 1);
+  assert.deepEqual(
+    { ...db.prepare("SELECT phase, collective_line FROM minna_sessions WHERE id = 'room-reveal'").get() },
+    { phase: "question-5", collective_line: null },
+  );
+
+  assert.equal(rewind("room-finale", "finale", "reveal", "line", 11), 1);
+  assert.deepEqual(
+    { ...db.prepare("SELECT phase, deadline_at, special FROM minna_sessions WHERE id = 'room-finale'").get() },
+    { phase: "reveal", deadline_at: null, special: 0 },
+  );
+  assert.deepEqual(
+    { ...db.prepare("SELECT hold_started_at, hold_completed, finale_eligible FROM minna_participants WHERE session_id = 'room-finale'").get() },
+    { hold_started_at: null, hold_completed: 0, finale_eligible: 0 },
+  );
+
+  assert.equal(rewind("room-complete", "finale", "reveal", "line", 12), 0);
+  assert.equal(db.prepare("SELECT phase FROM minna_sessions WHERE id = 'room-complete'").get().phase, "complete");
+  assert.deepEqual(
+    { ...db.prepare("SELECT hold_started_at, hold_completed, finale_eligible FROM minna_participants WHERE session_id = 'room-complete'").get() },
+    { hold_started_at: 10, hold_completed: 1, finale_eligible: 1 },
+  );
+
+  assert.equal(rewind("room-stale", "question-2", "question-1", null, 13), 0);
+  assert.equal(db.prepare("SELECT phase FROM minna_sessions WHERE id = 'room-stale'").get().phase, "question-3");
+
+  const staleNext = db.prepare(
+    `UPDATE minna_sessions SET phase = 'finale', deadline_at = 99, updated_at = 14
+     WHERE id = 'room-stale-next' AND phase = 'reveal'`,
+  ).run();
+  assert.equal(staleNext.changes, 0);
+  assert.equal(db.prepare("SELECT phase FROM minna_sessions WHERE id = 'room-stale-next'").get().phase, "question-5");
+  db.close();
+});
+
 test("upgrades populated legacy data without losing room state", async () => {
   const db = new DatabaseSync(":memory:");
   const files = await migrationFiles();

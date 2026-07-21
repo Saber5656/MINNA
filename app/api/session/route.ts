@@ -5,7 +5,10 @@ import {
   identityForClient,
   isAnswerOption,
   isClientId,
+  isPhase,
   isQuestionId,
+  isRoomAnswerOption,
+  previousPresentationPhase,
   roomContentFromJson,
   roomContentForAudience,
   roomContentFromUnknown,
@@ -25,13 +28,13 @@ const HOLD_MS = 3_000;
 const FINALE_MS = 20_000;
 const MAX_JSON_BODY_BYTES = 16_384;
 const AUDIENCE_ACTIONS = ["join", "heartbeat", "answer", "hold-start", "hold-stop", "firework"];
-const HOST_ACTIONS = ["open-room", "configure-room", "configure-content", "tick", "next", "fire", "reset"];
+const HOST_ACTIONS = ["open-room", "configure-room", "configure-content", "tick", "back", "next", "fire", "reset"];
 const ANSWER_CONFIG = {
-  "ai-thanks": { phase: "question-1", column: "answer_thanks", options: ["yes", "no"] },
-  "current-state": { phase: "question-2", column: "answer_state", options: ["awake", "sleepy", "deploying"] },
-  "room-wish": { phase: "question-3", column: "answer_wish", options: ["laugh", "wow", "connect"] },
-  "team-role": { phase: "question-4", column: "answer_role", options: ["boke", "tsukkomi", "support"] },
-  "final-energy": { phase: "question-5", column: "answer_energy", options: ["calm", "hot", "maximum"] },
+  "ai-thanks": { phase: "question-1", column: "answer_thanks" },
+  "current-state": { phase: "question-2", column: "answer_state" },
+  "room-wish": { phase: "question-3", column: "answer_wish" },
+  "team-role": { phase: "question-4", column: "answer_role" },
+  "final-energy": { phase: "question-5", column: "answer_energy" },
 } as const;
 
 interface SessionRow {
@@ -119,6 +122,10 @@ export async function POST(request: Request) {
 
     if (HOST_ACTIONS.includes(action)) {
       const session = await hostSessionForRequest(request);
+      const expectedPhase = action === "back" || action === "next" ? payload.expectedPhase : undefined;
+      if ((action === "back" || action === "next") && !isPhase(expectedPhase)) {
+        return error("invalid-expected-phase", 400);
+      }
       if (action === "configure-room") {
         if (!isTargetCount(payload.targetCount)) return error("invalid-target-count", 400);
         await configureRoom(session.id, payload.targetCount);
@@ -129,7 +136,9 @@ export async function POST(request: Request) {
         await configureContent(session.id, content);
       }
       if (action === "tick") await advanceFinale(session.id);
-      if (["next", "fire", "reset"].includes(action)) await hostAction(session.id, action);
+      if (["back", "next", "fire", "reset"].includes(action)) {
+        await hostAction(session.id, action, isPhase(expectedPhase) ? expectedPhase : undefined);
+      }
       const joinCode = await ensureRoomCode(session.id);
       return stateResponse({ ...(await currentState(session.id, true)), joinCode });
     }
@@ -331,7 +340,8 @@ async function submitAnswer(
   optionId: AnswerOption,
 ) {
   const config = ANSWER_CONFIG[questionId];
-  if (session.phase !== config.phase || !config.options.some((option) => option === optionId)) return;
+  const content = roomContentFromJson(session.content_json);
+  if (session.phase !== config.phase || !isRoomAnswerOption(content, session.phase, questionId, optionId)) return;
   const column = config.column;
   await env.DB.prepare(
     `UPDATE minna_participants SET ${column} = ?, last_seen = ?
@@ -402,9 +412,10 @@ async function launchFirework(session: SessionRow, clientId: string) {
   ]);
 }
 
-async function hostAction(sessionId: string, action: string) {
+async function hostAction(sessionId: string, action: string, expectedPhase?: Phase) {
   const session = await readSession(sessionId);
-  const now = Date.now();
+  if ((action === "back" || action === "next") && expectedPhase !== session.phase) return;
+  const now = Math.max(Date.now(), session.updated_at + 1);
   if (action === "reset") {
     const roomCode = createRoomCode();
     await env.DB.batch([
@@ -420,6 +431,29 @@ async function hostAction(sessionId: string, action: string) {
   }
   if (action === "fire" && session.phase === "finale") {
     await completeFinale(session.id, false);
+    return;
+  }
+  if (action === "back") {
+    const phase = previousPresentationPhase(session.phase);
+    if (!phase) return;
+    const transition = env.DB.prepare(
+      `UPDATE minna_sessions SET phase = ?, collective_line = ?, deadline_at = NULL, special = 0, updated_at = ?
+       WHERE id = ? AND phase = ?`,
+    )
+      .bind(phase, phase === "question-5" ? null : session.collective_line, now, session.id, session.phase);
+    if (session.phase === "finale") {
+      await env.DB.batch([
+        transition,
+        env.DB.prepare(
+          `UPDATE minna_participants SET finale_eligible = 0, hold_started_at = NULL, hold_completed = 0
+           WHERE session_id = ? AND generation = ? AND EXISTS (
+             SELECT 1 FROM minna_sessions WHERE id = ? AND phase = ? AND updated_at = ?
+           )`,
+        ).bind(session.id, session.generation, session.id, phase, now),
+      ]);
+    } else {
+      await transition.run();
+    }
     return;
   }
   if (action !== "next" || session.target_count < 1) return;
@@ -445,26 +479,33 @@ async function hostAction(sessionId: string, action: string) {
         answerRole: row.answer_role,
         answerEnergy: row.answer_energy,
       })),
+      roomContentFromJson(session.content_json).questions,
     );
   }
+  const transition = env.DB.prepare(
+    `UPDATE minna_sessions SET phase = ?, collective_line = ?, deadline_at = ?, special = 0, updated_at = ?
+     WHERE id = ? AND phase = ?`,
+  )
+    .bind(phase, collectiveLine, phase === "finale" ? now + FINALE_MS : null, now, session.id, session.phase);
   if (phase === "finale") {
     await env.DB.batch([
+      transition,
       env.DB.prepare(
         `UPDATE minna_participants SET finale_eligible = 0, hold_started_at = NULL, hold_completed = 0
-         WHERE session_id = ? AND generation = ?`,
-      ).bind(session.id, session.generation),
+         WHERE session_id = ? AND generation = ? AND EXISTS (
+           SELECT 1 FROM minna_sessions WHERE id = ? AND phase = 'finale' AND updated_at = ?
+         )`,
+      ).bind(session.id, session.generation, session.id, now),
       env.DB.prepare(
         `UPDATE minna_participants SET finale_eligible = 1
-         WHERE session_id = ? AND generation = ? AND last_seen >= ?`,
-      ).bind(session.id, session.generation, now - ACTIVE_MS),
+         WHERE session_id = ? AND generation = ? AND last_seen >= ? AND EXISTS (
+           SELECT 1 FROM minna_sessions WHERE id = ? AND phase = 'finale' AND updated_at = ?
+         )`,
+      ).bind(session.id, session.generation, now - ACTIVE_MS, session.id, now),
     ]);
+  } else {
+    await transition.run();
   }
-  await env.DB.prepare(
-    `UPDATE minna_sessions SET phase = ?, collective_line = ?, deadline_at = ?, special = 0, updated_at = ?
-     WHERE id = ?`,
-  )
-    .bind(phase, collectiveLine, phase === "finale" ? now + FINALE_MS : null, now, session.id)
-    .run();
 }
 
 async function currentState(sessionId: string, hostView = false): Promise<PublicState> {

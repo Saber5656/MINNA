@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ArrowLeft,
   ArrowRight,
   Check,
   ChevronDown,
@@ -10,10 +11,12 @@ import {
   ListChecks,
   Mouse,
   PartyPopper,
+  Plus,
   QrCode,
   RotateCcw,
   Save,
   Sparkles,
+  Trash2,
   Users,
   Volume2,
   X,
@@ -24,6 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import {
   defaultRoomContent,
   identityForClient,
+  previousPresentationPhase,
   questionForPhase,
   type PublicFirework,
   type PublicState,
@@ -58,6 +62,7 @@ function HostExperience() {
   const [qr, setQr] = useState("");
   const [connected, setConnected] = useState(true);
   const [controlLocked, setControlLocked] = useState(false);
+  const [controlPending, setControlPending] = useState(false);
   const [activeFireworks, setActiveFireworks] = useState<PublicFirework[]>([]);
   const [targetDraft, setTargetDraft] = useState("68");
   const [configuring, setConfiguring] = useState(false);
@@ -67,6 +72,7 @@ function HostExperience() {
   const [contentSaving, setContentSaving] = useState(false);
   const [contentError, setContentError] = useState("");
   const previousRef = useRef<PublicState | null>(null);
+  const controlPendingRef = useRef(false);
   const roomCodeRef = useRef("");
   const seenFireworksRef = useRef(new Set<number>());
   const fireworkTimersRef = useRef<number[]>([]);
@@ -163,9 +169,13 @@ function HostExperience() {
     };
   }, [acceptHostState]);
 
-  const control = async (action: "next" | "fire" | "reset") => {
+  const control = async (action: "back" | "next" | "fire" | "reset") => {
+    if (controlPendingRef.current) return;
+    controlPendingRef.current = true;
+    setControlPending(true);
     try {
-      acceptHostState(await postHost(action));
+      const extra = action === "back" || action === "next" ? { expectedPhase: state.phase } : {};
+      acceptHostState(await postHost(action, extra));
     } catch (error) {
       if (error instanceof HostAuthError && error.status === 401) {
         location.href = `/signin-with-chatgpt?return_to=${encodeURIComponent("/host")}`;
@@ -173,6 +183,9 @@ function HostExperience() {
       }
       if (error instanceof HostAuthError && error.status === 403) setControlLocked(true);
       setConnected(false);
+    } finally {
+      controlPendingRef.current = false;
+      setControlPending(false);
     }
   };
 
@@ -237,6 +250,31 @@ function HostExperience() {
         : question),
     }));
   };
+  const addOption = (questionIndex: number) => {
+    setContentDraft((current) => ({
+      ...current,
+      questions: current.questions.map((question, index) => index === questionIndex && question.options.length < 4
+        ? {
+            ...question,
+            options: [
+              ...question.options,
+              {
+                id: `custom-${question.id}-${crypto.randomUUID()}`,
+                label: `選択肢 ${question.options.length + 1}`,
+              },
+            ],
+          }
+        : question),
+    }));
+  };
+  const removeOption = (questionIndex: number, optionIndex: number) => {
+    setContentDraft((current) => ({
+      ...current,
+      questions: current.questions.map((question, index) => index === questionIndex && question.options.length > 2
+        ? { ...question, options: question.options.filter((_, innerIndex) => innerIndex !== optionIndex) }
+        : question),
+    }));
+  };
   const saveContent = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setContentSaving(true);
@@ -270,6 +308,7 @@ function HostExperience() {
     ? state.participants.filter((participant) => participant.answeredCurrentQuestion).length
     : 0;
   const finalePercent = Math.round(state.finale.progress * 100);
+  const canGoBack = previousPresentationPhase(state.phase) !== null;
   const copyText = question?.prompt ?? (state.phase === "reveal" ? state.collectiveLine ?? "" : state.phase === "complete" ? state.finalePunchline : "");
 
   return (
@@ -379,11 +418,29 @@ function HostExperience() {
                   </label>
                   <div className="option-edit-grid">
                     {draftQuestion.options.map((option, optionIndex) => (
-                      <label key={option.id}>
-                        <span>選択肢 {optionIndex + 1}</span>
-                        <input maxLength={24} value={option.label} onChange={(event) => updateOptionLabel(questionIndex, optionIndex, event.target.value)} required />
-                      </label>
+                      <div className="option-edit-row" key={option.id}>
+                        <label>
+                          <span>選択肢 {optionIndex + 1}</span>
+                          <input maxLength={24} value={option.label} onChange={(event) => updateOptionLabel(questionIndex, optionIndex, event.target.value)} required />
+                        </label>
+                        <button
+                          className="option-remove"
+                          type="button"
+                          disabled={draftQuestion.options.length <= 2}
+                          onClick={() => removeOption(questionIndex, optionIndex)}
+                          aria-label={`選択肢 ${optionIndex + 1} を削除`}
+                          title={draftQuestion.options.length <= 2 ? "選択肢は2個以上必要です" : "選択肢を削除"}
+                        >
+                          <Trash2 />
+                        </button>
+                      </div>
                     ))}
+                  </div>
+                  <div className="option-editor-actions">
+                    <span>{draftQuestion.options.length} / 4</span>
+                    <button type="button" disabled={draftQuestion.options.length >= 4} onClick={() => addOption(questionIndex)}>
+                      <Plus />選択肢を追加
+                    </button>
                   </div>
                 </fieldset>
               ))}
@@ -404,9 +461,10 @@ function HostExperience() {
         <div className="control-status"><span className={`status-dot ${connected && !controlLocked ? "" : "offline"}`} />{controlLocked ? "CONTROL LOCKED" : connected ? "LIVE" : "RECONNECTING"}</div>
         <div className="control-actions">
           <IconButton label="セリフを再生" disabled={!state.collectiveLine} onClick={speak}><Volume2 /></IconButton>
-          <IconButton label="次へ進む" accent disabled={state.targetCount === 0 || state.phase === "finale" || state.phase === "complete"} onClick={() => void control("next")}><ArrowRight /></IconButton>
-          <IconButton label="フィナーレを発火" hot disabled={state.phase !== "finale"} onClick={() => void control("fire")}><Zap /></IconButton>
-          <IconButton label="最初からやり直す" onClick={() => void control("reset")}><RotateCcw /></IconButton>
+          <IconButton label="ひとつ前に戻る" disabled={controlPending || !canGoBack} onClick={() => void control("back")}><ArrowLeft /></IconButton>
+          <IconButton label="次へ進む" accent disabled={controlPending || state.targetCount === 0 || state.phase === "finale" || state.phase === "complete"} onClick={() => void control("next")}><ArrowRight /></IconButton>
+          <IconButton label="フィナーレを発火" hot disabled={controlPending || state.phase !== "finale"} onClick={() => void control("fire")}><Zap /></IconButton>
+          <IconButton label="最初からやり直す" disabled={controlPending} onClick={() => void control("reset")}><RotateCcw /></IconButton>
         </div>
       </footer>
     </div>
