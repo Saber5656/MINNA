@@ -1,9 +1,17 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
 const title = "MINNA.exe | 会場を、ひとりにする。";
 const description = "観客全員の色と回答から、一つの集合人格をつくる3分間の参加型デモ。";
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  colorScheme: "dark",
+  themeColor: "#08090c",
+};
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

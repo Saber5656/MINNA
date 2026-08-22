@@ -19,9 +19,10 @@ import {
 const root = new URL("../", import.meta.url);
 
 test("ships the audience and host product instead of the starter", async () => {
-  const [client, layout, join, host, packageJson] = await Promise.all([
+  const [client, layout, styles, join, host, packageJson] = await Promise.all([
     readFile(new URL("app/minna-client.tsx", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("app/join/page.tsx", root), "utf8"),
     readFile(new URL("app/host/page.tsx", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
@@ -42,6 +43,16 @@ test("ships the audience and host product instead of the starter", async () => {
   assert.match(host, /chatGPTSignInPath/);
   assert.match(layout, /MINNA\.exe/);
   assert.match(layout, /og\.png/);
+  assert.match(layout, /viewportFit: "cover"/);
+  assert.match(styles, /backdrop-filter: blur\(24px\) saturate\(145%\)/);
+  assert.match(styles, /env\(safe-area-inset-bottom\)/);
+  assert.match(styles, /grid-template-rows: calc\(64px \+ env\(safe-area-inset-top\)\)/);
+  assert.match(styles, /\.stepper-buttons \{ display: grid; grid-template-columns: repeat\(2, 44px\)/);
+  assert.match(styles, /\.stepper-buttons button \{ width: 44px; min-width: 44px; min-height: 56px/);
+  assert.match(styles, /prefers-reduced-transparency/);
+  assert.match(styles, /\.answer-grid button, \.hold-button \{ background: #24262c; \}/);
+  assert.match(styles, /button:focus-visible/);
+  assert.match(styles, /\.answer-grid button \{ min-height: 84px/);
   assert.doesNotMatch(`${client}${layout}${packageJson}`, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });
 
